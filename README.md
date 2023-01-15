@@ -109,6 +109,7 @@ public partial struct SaveSystem : ISystem
         this.saveManager.Dispose();
     }
 
+    [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
         // Save save data to a NativeList. Usually written to disk
