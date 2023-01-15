@@ -1,5 +1,6 @@
 # BovineLabs Savanna - DOTS Saving - Free
 The free edition of BovineLabs Savanna Saving for Dots
+
 Support: https://discord.gg/RTsw6Cxvw3
 
 # Quick Start
