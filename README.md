@@ -3,6 +3,17 @@ The free edition of BovineLabs Savanna Saving for Dots
 
 Support: https://discord.gg/RTsw6Cxvw3
 
+# Installation
+Savanna is a saving system for Unity’s Entities package. If you do not use Entities in your project then this package is not for you.
+
+The minimum requirements for the package is
+- Entities: 1.0.0-pre.15 and newer
+- BovineLabs Core: 0.11.0 and newer (available https://gitlab.com/tertle/com.bovinelabs.core or https://openupm.com/packages/com.bovinelabs.core/)
+
+The samples also require
+- Entities Graphics: 1.0.0-pre.15 and newer
+- Universal RP
+
 # Quick Start
 ## Save Attribute
 To make a IComponentData or IBufferElement savable all that is required is to add the `Save` attribute to the to component. This can be applied to `IComponentData`, `IBufferElement` and and tag components that have `IEnableableComponent`. 
