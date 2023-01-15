@@ -1,0 +1,42 @@
+{
+    "name": "BovineLabs.Saving",
+    "rootNamespace": "",
+    "references": [
+        "GUID:f8242764ccad06a4ca6d427d36be92ab",
+        "GUID:2665a8d13d1b3f18800f46e256720795",
+        "GUID:e0cd26848372d4e5c891c569017e11f1",
+        "GUID:734d92eba21c94caba915361bd5ac177",
+        "GUID:8819f35a0fc84499b990e90a4ca1911f",
+        "GUID:8a2eafa29b15f444eb6d74f94a930e1d",
+        "GUID:d8b63aba1907145bea998dd612889d6b",
+        "GUID:e04e6c86a9f3947eb95fded39f9e60cc",
+        "GUID:63afb046c8423dd448ae7aba042ea63d",
+        "GUID:5f3cf485eb0554709a8abbeace890c86",
+        "GUID:a5baed0c9693541a5bd947d336ec7659"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.physics",
+            "expression": "",
+            "define": "UNITY_PHYSICS"
+        },
+        {
+            "name": "com.unity.physics",
+            "expression": "",
+            "define": "ENABLE_TRANSFORM_V1"
+        },
+        {
+            "name": "com.unity.netcode",
+            "expression": "",
+            "define": "ENABLE_TRANSFORM_V1"
+        }
+    ],
+    "noEngineReferences": false
+}
