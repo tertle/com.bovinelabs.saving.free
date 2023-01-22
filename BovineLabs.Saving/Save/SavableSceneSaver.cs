@@ -184,11 +184,10 @@ namespace BovineLabs.Saving
                     this.Serializer.AddBufferNoResize(entities);
                     this.Serializer.AddBufferNoResize(savableScenes);
 
-                    linkCount += savableLinks.Length;
-
                     for (var i = 0; i < savableLinks.Length; i++)
                     {
                         var links = savableLinks[i];
+                        linkCount += links.Length;
                         this.Serializer.AddNoResize(links.Length);
                         this.Serializer.AddBufferNoResize((SavableLinks*)links.GetUnsafeReadOnlyPtr(), links.Length);
                     }
