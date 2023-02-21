@@ -31,7 +31,7 @@ namespace Samples.Boids
     {
         internal struct JobWrapper<T> where T : struct
         {
-            [ReadOnly] public NativeMultiHashMap<int, int> HashMap;
+            [ReadOnly] public NativeParallelMultiHashMap<int, int> HashMap;
             public T JobData;
         }
 
@@ -50,7 +50,7 @@ namespace Samples.Boids
             JobNativeMultiHashMapMergedSharedKeyIndicesProducer<T>.Initialize();
         }
 
-        public static unsafe JobHandle Schedule<T>(this T jobData, NativeMultiHashMap<int, int> hashMap,
+        public static unsafe JobHandle Schedule<T>(this T jobData, NativeParallelMultiHashMap<int, int> hashMap,
                 int minIndicesPerJobCount, JobHandle dependsOn = default)
             where T : struct, IJobNativeMultiHashMapMergedSharedKeyIndices
         {
@@ -119,7 +119,7 @@ namespace Samples.Boids
                             var value = UnsafeUtility.ReadArrayElement<int>(values, entryIndex);
                             int firstValue;
 
-                            NativeMultiHashMapIterator<int> it;
+                            NativeParallelMultiHashMapIterator<int> it;
                             jobWrapper.HashMap.TryGetFirstValue(key, out firstValue, out it);
 
                             // [macton] Didn't expect a usecase for this with multiple same values

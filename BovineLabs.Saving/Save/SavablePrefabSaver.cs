@@ -98,8 +98,6 @@ namespace BovineLabs.Saving
             // We need to sync point before instantiate anyway so it's faster to run the jobs
             var prefabLookup = this.CreatePrefabLookup(this.System.WorldUpdateAllocator);
 
-            this.saveableLinks.Update(ref this.System);
-
             new AllocateLists { SavedEntities = savedEntities, PrefabLookup = prefabLookup }.Run();
 
             var oldEntities = new NativeList<Entity>(0, this.System.WorldUpdateAllocator);
@@ -199,6 +197,8 @@ namespace BovineLabs.Saving
                     EntityMappingClone = entityMappingClone,
                 }
                 .Schedule(dependency);
+
+            this.saveableLinks.Update(ref this.System);
 
             dependency = new RemapLinks
                 {

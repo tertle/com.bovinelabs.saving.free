@@ -34,6 +34,7 @@ namespace BovineLabs.Saving
 
             this.commandBufferQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<EndSimulationEntityCommandBufferSystem.Singleton>()
+                .WithOptions(EntityQueryOptions.IncludeSystems)
                 .Build(ref builder.System);
         }
 

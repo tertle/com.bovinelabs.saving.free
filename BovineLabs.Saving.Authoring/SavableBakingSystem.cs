@@ -11,25 +11,14 @@ namespace BovineLabs.Saving.Authoring
     using Unity.Entities;
     using UnityEditor;
 
-    [BurstCompile]
     [WorldSystemFilter(WorldSystemFilterFlags.BakingSystem)]
     public partial struct SavableBakingSystem : ISystem
     {
         /// <inheritdoc/>
-        public void OnCreate(ref SystemState state)
-        {
-        }
-
-        /// <inheritdoc/>
-        public void OnDestroy(ref SystemState state)
-        {
-        }
-
-        /// <inheritdoc/>
         [BurstCompile]
         public void OnUpdate(ref SystemState state)
         {
-            var records = new NativeMultiHashMap<SceneSectionWrapper, SavableScene>(8, Allocator.Temp);
+            var records = new NativeParallelMultiHashMap<SceneSectionWrapper, SavableScene>(8, Allocator.Temp);
             var ecb = new EntityCommandBuffer(Allocator.Temp);
 
             var query = SystemAPI.QueryBuilder().WithAll<RootSavable>().WithOptions(EntityQueryOptions.IncludePrefab).Build();
@@ -58,8 +47,13 @@ namespace BovineLabs.Saving.Authoring
                         };
 
                         ecb.AddComponent(entity, savableScene);
-                        var sceneSection = state.EntityManager.GetSharedComponent<SceneSection>(entity);
-                        records.Add(sceneSection, savableScene);
+
+                        // Odd case if entity just dropped in a non-subscene
+                        if (state.EntityManager.HasComponent<SceneSection>(entity))
+                        {
+                            var sceneSection = state.EntityManager.GetSharedComponent<SceneSection>(entity);
+                            records.Add(sceneSection, savableScene);
+                        }
                     }
                 }
             }

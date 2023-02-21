@@ -29,7 +29,7 @@ namespace Samples.Boids
         // In this sample there are 3 total unique boid variants, one for each unique value of the
         // Boid SharedComponent (note: this includes the default uninitialized value at
         // index 0, which isnt actually used in the sample).
-        
+
         [BurstCompile]
         public void OnCreate(ref SystemState state)
         {
@@ -83,7 +83,7 @@ namespace Samples.Boids
                 // note: working with a sparse grid and not a dense bounded grid so there
                 // are no predefined borders of the space.
 
-                var hashMap                   = new NativeMultiHashMap<int, int>(boidCount, world.UpdateAllocator.ToAllocator);
+                var hashMap                   = new NativeParallelMultiHashMap<int, int>(boidCount, world.UpdateAllocator.ToAllocator);
                 var cellIndices               = CollectionHelper.CreateNativeArray<int, RewindableAllocator>(boidCount, ref world.UpdateAllocator);
                 var cellObstaclePositionIndex = CollectionHelper.CreateNativeArray<int, RewindableAllocator>(boidCount, ref world.UpdateAllocator);
                 var cellTargetPositionIndex   = CollectionHelper.CreateNativeArray<int, RewindableAllocator>(boidCount, ref world.UpdateAllocator);
@@ -195,7 +195,7 @@ namespace Samples.Boids
             uniqueBoidTypes.Dispose();
         }
 
-        
+
         // This accumulates the `positions` (separations) and `headings` (alignments) of all the boids in each cell to:
         // 1) count the number of boids in each cell
         // 2) find the nearest obstacle and target to each boid cell
@@ -273,7 +273,7 @@ namespace Samples.Boids
             [ReadOnly] public NativeArray<int> ChunkBaseEntityIndices;
             [NativeDisableParallelForRestriction] public NativeArray<float3> CellAlignment;
             [NativeDisableParallelForRestriction] public NativeArray<float3> CellSeparation;
-            public NativeMultiHashMap<int, int>.ParallelWriter ParallelHashMap;
+            public NativeParallelMultiHashMap<int, int>.ParallelWriter ParallelHashMap;
             public float InverseBoidCellRadius;
             void Execute([ChunkIndexInQuery] int chunkIndexInQuery, [EntityIndexInChunk] int entityIndexInChunk, in LocalToWorld localToWorld)
             {
