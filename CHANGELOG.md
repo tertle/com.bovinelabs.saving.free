@@ -1,4 +1,7 @@
 # Changelog
+## [0.5.4] - 2022-07-09
+- Fixed [SaveIgnore] causing writing out of bounds if used in middle of component
+
 ## [0.5.2] - 2022-02-22
 - Updated to support pre.44
 - Fixed InvalidOperationException on BufferLookup<BovineLabs.Saving.SavableLinks> when loading
