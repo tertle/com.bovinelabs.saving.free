@@ -100,7 +100,7 @@ namespace BovineLabs.Saving
             // If we aren't add end we need to add 1 more chunk. This also handles the case with no SaveIgnore attributes.
             if (startIndex != UnsafeUtility.SizeOf(type))
             {
-                chunks.Add(new SaveChunk(startIndex, UnsafeUtility.SizeOf(type)));
+                chunks.Add(new SaveChunk(startIndex, UnsafeUtility.SizeOf(type) - startIndex));
             }
 
             // Enforce LayoutSequential for any component using SaveIgnore
