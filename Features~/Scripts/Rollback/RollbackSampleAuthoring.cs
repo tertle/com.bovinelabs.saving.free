@@ -19,7 +19,7 @@ namespace BovineLabs.Saving.Samples.Rollback
     {
         public override void Bake(RollbackSampleAuthoring authoring)
         {
-            AddComponent<RollbackSample>();
+            this.AddComponent<RollbackSample>(this.GetEntity(TransformUsageFlags.None));
         }
     }
 }

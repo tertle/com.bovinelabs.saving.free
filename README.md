@@ -7,11 +7,11 @@ Support: https://discord.gg/RTsw6Cxvw3
 Savanna is a saving system for Unity’s Entities package. If you do not use Entities in your project then this package is not for you.
 
 The minimum requirements for the package is
-- Entities: 1.0.0-pre.15 and newer
-- BovineLabs Core: 0.15.1 and newer (available https://gitlab.com/tertle/com.bovinelabs.core or https://openupm.com/packages/com.bovinelabs.core/)
+- Entities: 1.2.0-pre.12 and newer
+- BovineLabs Core: 1.2.12 and newer (available https://gitlab.com/tertle/com.bovinelabs.core or https://openupm.com/packages/com.bovinelabs.core/)
 
 The samples also require
-- Entities Graphics: 1.0.0-pre.15 and newer
+- Entities Graphics: 1.2.0-pre.12 and newer
 - Universal RP
 
 # Quick Start

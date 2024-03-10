@@ -11,41 +11,36 @@ namespace BovineLabs.Saving.Authoring
 
     public class SavableAuthoring : MonoBehaviour
     {
-    }
-
-    [TemporaryBakingType]
-    internal struct RootSavable : IComponentData
-    {
-        public GlobalObjectId GlobalObjectId;
-        public bool IsPrefab;
-    }
-
-    public class SavableBaker : Baker<SavableAuthoring>
-    {
-        public override void Bake(SavableAuthoring authoring)
+        private class Baker : Baker<SavableAuthoring>
         {
-            this.AddComponent<Savable>();
-
-            if (authoring.transform.parent != null)
+            /// <inheritdoc/>
+            public override void Bake(SavableAuthoring authoring)
             {
-                return;
-            }
+                var entity = this.GetEntity(TransformUsageFlags.None);
 
-            this.AddComponent(new RootSavable
-            {
-                GlobalObjectId = GlobalObjectId.GetGlobalObjectIdSlow(authoring),
-                IsPrefab = !authoring.gameObject.scene.IsValid(),
-            });
+                this.AddComponent<Savable>(entity);
 
-            var childrenLinks = authoring.GetComponentsInChildren<SavableAuthoring>(false).Where(s => s != authoring).ToArray();
-            if (childrenLinks.Length > 0)
-            {
-                var savableLinks = this.AddBuffer<SavableLinks>();
-
-                foreach (var link in childrenLinks)
+                if (authoring.transform.parent != null)
                 {
-                    var linkEntity = this.GetEntity(link.gameObject);
-                    savableLinks.Add(new SavableLinks { Entity = linkEntity, Value = GlobalObjectId.GetGlobalObjectIdSlow(link).targetObjectId });
+                    return;
+                }
+
+                this.AddComponent(entity, new RootSavable
+                {
+                    GlobalObjectId = GlobalObjectId.GetGlobalObjectIdSlow(authoring), // TODO faster to batch do this with GlobalObjectIdentifiersToObjectsSlow
+                    IsPrefab = !authoring.gameObject.scene.IsValid(),
+                });
+
+                var childrenLinks = authoring.GetComponentsInChildren<SavableAuthoring>(false).Where(s => s != authoring).ToArray();
+                if (childrenLinks.Length > 0)
+                {
+                    var savableLinks = this.AddBuffer<SavableLinks>(entity);
+
+                    foreach (var link in childrenLinks)
+                    {
+                        var linkEntity = this.GetEntity(link.gameObject, TransformUsageFlags.None);
+                        savableLinks.Add(new SavableLinks { Entity = linkEntity, LinkID = GlobalObjectId.GetGlobalObjectIdSlow(link).targetObjectId });
+                    }
                 }
             }
         }

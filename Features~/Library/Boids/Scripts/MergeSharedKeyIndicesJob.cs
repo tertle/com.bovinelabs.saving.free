@@ -6,7 +6,7 @@ using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 
-namespace Samples.Boids
+namespace Boids
 {
     // IJobNativeMultiHashMapMergedSharedKeyIndices: custom job type, following its own defined custom safety rules:
     // A) because we know how hashmap safety works, B) we can iterate safely in parallel
@@ -27,6 +27,7 @@ namespace Samples.Boids
         void ExecuteNext(int firstIndex, int index);
     }
 
+    [BurstCompile]
     public static class JobNativeMultiHashMapUniqueHashExtensions
     {
         internal struct JobWrapper<T> where T : struct

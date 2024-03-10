@@ -25,7 +25,6 @@ namespace BovineLabs.Saving.Samples.Common
 
         public void LoadFromDisk()
         {
-
             var bytes = Resources.Load<TextAsset>("save").bytes;
             var nativeArray = new NativeArray<byte>(bytes, Allocator.Persistent);
 

@@ -39,7 +39,6 @@ namespace BovineLabs.Saving
 
         private SavablePrefabSaver savablePrefabSaver;
         private SavableSceneSaver savableSceneSaver;
-        private SubSceneRecordSaver subSceneRecordSaver;
         private NativeHashMap<ulong, ComponentDataSave> componentSavers;
         private NativeHashMap<ulong, BufferElementDataSave> bufferSavers;
 
@@ -60,7 +59,6 @@ namespace BovineLabs.Saving
 
             this.savablePrefabSaver = new SavablePrefabSaver(this.builder);
             this.savableSceneSaver = new SavableSceneSaver(this.builder);
-            this.subSceneRecordSaver = new SubSceneRecordSaver(this.builder);
 
             this.SetupAllSavers();
         }
@@ -115,6 +113,11 @@ namespace BovineLabs.Saving
                 query.ResetFilter();
             }
 
+            foreach (var query in this.builder.EntityUnfilteredQueries)
+            {
+                query.ResetFilter();
+            }
+
             this.subSceneFilter = default;
         }
 
@@ -146,61 +149,71 @@ namespace BovineLabs.Saving
         {
             foreach (var query in this.builder.EntityQueries)
             {
-                ref var sharedFilters = ref query.GetSharedFiltersAsRef();
+                this.SetSectionFilterOnQuery(query, sectionSection);
+            }
 
-                switch (sharedFilters.Count)
-                {
-                    case 0:
-                        query.SetSharedComponentFilter(sectionSection);
-                        break;
-
-                    case 1:
-                        if (this.subSceneFilter.SceneGUID != default)
-                        {
-                            Assert.IsTrue(
-                                query.QueryHasSharedFilter<SceneSection>(0),
-                                "A SceneSection SharedComponentFilter has been overridden incorrectly.");
-
-                            // Only filter is already a sub scene so just replace
-                            // Otherwise add to end
-                            query.SetSharedComponentFilter(sectionSection);
-                        }
-                        else
-                        {
-                            Assert.IsFalse(
-                                query.QueryHasSharedFilter<SceneSection>(0),
-                                "A SceneSection SharedComponentFilter has been added incorrectly.");
-
-                            // Otherwise add to end
-                            query.AddSharedComponentFilter(sectionSection);
-                        }
-
-                        break;
-
-                    case 2:
-                        Assert.IsTrue(
-                            query.QueryHasSharedFilter<SceneSection>(1),
-                            "A query has been manually filtered and is not supported. This must be done via SaveProcessor.");
-
-                        // Replace existing and SetSharedComponentFilter ensures the SceneSection is always the last index
-                        query.ReplaceSharedComponentFilter(1, sectionSection);
-                        break;
-                }
+            foreach (var query in this.builder.EntityUnfilteredQueries)
+            {
+                this.SetSectionFilterOnQuery(query, sectionSection);
             }
 
             this.subSceneFilter = sectionSection;
         }
 
-        internal static NativeList<TypeIndex> BuiltInSavers(Allocator allocator = Allocator.Temp)
+        internal static NativeList<ComponentSaveState> BuiltInSavers(Allocator allocator = Allocator.Temp)
         {
-            return new NativeList<TypeIndex>(allocator)
+            return new NativeList<ComponentSaveState>(allocator)
             {
                 // Add custom savers for common components we don't have control over
-                TypeManager.GetTypeIndex(typeof(LocalTransform)),
+                new(ComponentType.ReadWrite<LocalTransform>()),
 #if UNITY_PHYSICS
-                TypeManager.GetTypeIndex(typeof(PhysicsVelocity)),
+                new(ComponentType.ReadWrite<PhysicsVelocity>()),
 #endif
             };
+        }
+
+        private void SetSectionFilterOnQuery(EntityQuery query, SceneSection sectionSection)
+        {
+            ref var sharedFilters = ref query.GetSharedFiltersAsRef();
+
+            switch (sharedFilters.Count)
+            {
+                case 0:
+                    query.SetSharedComponentFilter(sectionSection);
+                    break;
+
+                case 1:
+                    if (this.subSceneFilter.SceneGUID != default)
+                    {
+                        Assert.IsTrue(
+                            query.QueryHasSharedFilter<SceneSection>(0),
+                            "A SceneSection SharedComponentFilter has been overridden incorrectly.");
+
+                        // Only filter is already a sub scene so just replace
+                        // Otherwise add to end
+                        query.SetSharedComponentFilter(sectionSection);
+                    }
+                    else
+                    {
+                        Assert.IsFalse(
+                            query.QueryHasSharedFilter<SceneSection>(0),
+                            "A SceneSection SharedComponentFilter has been added incorrectly.");
+
+                        // Otherwise add to end
+                        query.AddSharedComponentFilter(sectionSection);
+                    }
+
+                    break;
+
+                case 2:
+                    Assert.IsTrue(
+                        query.QueryHasSharedFilter<SceneSection>(1),
+                        "A query has been manually filtered and is not supported. This must be done via SaveProcessor.");
+
+                    // Replace existing and SetSharedComponentFilter ensures the SceneSection is always the last index
+                    query.ReplaceSharedComponentFilter(1, sectionSection);
+                    break;
+            }
         }
 
         private void SetupAllSavers()
@@ -210,19 +223,29 @@ namespace BovineLabs.Saving
                 return;
             }
 
-            foreach (var typeIndex in BuiltInSavers(this.System.WorldUpdateAllocator).AsArray())
+            foreach (var state in BuiltInSavers(this.System.WorldUpdateAllocator).AsArray())
             {
-                this.AddComponentSaver(typeIndex);
+                ref readonly var type = ref TypeManager.GetTypeInfo(TypeManager.GetTypeIndexFromStableTypeHash(state.StableTypeHash));
+
+                switch (type.Category)
+                {
+                    case TypeManager.TypeCategory.ComponentData:
+                        this.AddComponentSaver(state);
+                        break;
+                    case TypeManager.TypeCategory.BufferData:
+                        this.AddBufferSaver(state);
+                        break;
+                }
             }
 
             foreach (var type in this.builder.ComponentSavers)
             {
-                this.AddComponentSaver(type.TypeIndex);
+                this.AddComponentSaver(type);
             }
 
             foreach (var type in this.builder.BufferSavers)
             {
-                this.AddBufferSaver(type.TypeIndex);
+                this.AddBufferSaver(type);
             }
 
             foreach (var type in TypeManager.AllTypes)
@@ -234,16 +257,18 @@ namespace BovineLabs.Saving
 
                 if (type.Category == TypeManager.TypeCategory.ComponentData)
                 {
-                    if (type.Type.GetCustomAttribute(typeof(SaveAttribute)) != null)
+                    var saveAttribute = type.Type.GetCustomAttribute<SaveAttribute>();
+                    if (saveAttribute != null)
                     {
-                        this.AddComponentSaver(type.TypeIndex);
+                        this.AddComponentSaver(new ComponentSaveState(ComponentType.FromTypeIndex(type.TypeIndex), saveAttribute.Feature));
                     }
                 }
                 else if (type.Category == TypeManager.TypeCategory.BufferData)
                 {
-                    if (type.Type.GetCustomAttribute(typeof(SaveAttribute)) != null)
+                    var saveAttribute = type.Type.GetCustomAttribute<SaveAttribute>();
+                    if (saveAttribute != null)
                     {
-                        this.AddBufferSaver(type.TypeIndex);
+                        this.AddBufferSaver(new ComponentSaveState(ComponentType.FromTypeIndex(type.TypeIndex), saveAttribute.Feature));
                     }
                 }
             }
@@ -256,17 +281,15 @@ namespace BovineLabs.Saving
             // }
         }
 
-        private void AddComponentSaver(int typeIndex)
+        private void AddComponentSaver(ComponentSaveState state)
         {
-            var stableTypeHash = TypeManager.GetTypeInfo(typeIndex).StableTypeHash;
-            var saver = new ComponentDataSave(this.builder, stableTypeHash);
+            var saver = new ComponentDataSave(this.builder, state);
             this.componentSavers.Add(saver.Key, saver);
         }
 
-        private void AddBufferSaver(int typeIndex)
+        private void AddBufferSaver(ComponentSaveState state)
         {
-            var stableTypeHash = TypeManager.GetTypeInfo(typeIndex).StableTypeHash;
-            var saver = new BufferElementDataSave(this.builder, stableTypeHash);
+            var saver = new BufferElementDataSave(this.builder, state);
             this.bufferSavers.Add(saver.Key, saver);
         }
 
@@ -282,10 +305,8 @@ namespace BovineLabs.Saving
                 var chunks = this.sharedQuery.ToArchetypeChunkListAsync(this.System.WorldUpdateAllocator, dependency, out var chunkDependency);
                 dependency = chunkDependency;
 
-                // dependency.Complete();
                 handles[index++] = this.Serialize(this.savablePrefabSaver, chunks, dependency);
                 handles[index++] = this.Serialize(this.savableSceneSaver, chunks, dependency);
-                handles[index++] = this.Serialize(this.subSceneRecordSaver, chunks, dependency);
 
                 foreach (var saver in this.componentSavers)
                 {
@@ -343,7 +364,7 @@ namespace BovineLabs.Saving
         {
             using (MergeMarker.Auto())
             {
-                var keyIndexMap = new NativeParallelHashMap<ulong, int>(this.serializerMap.Length, this.System.WorldUpdateAllocator);
+                var keyIndexMap = new NativeHashMap<ulong, int>(this.serializerMap.Length, this.System.WorldUpdateAllocator);
                 var startIndex = new NativeReference<int>(this.System.WorldUpdateAllocator);
                 startIndex.Value = UnsafeUtility.SizeOf<Header>();
 
@@ -497,11 +518,9 @@ namespace BovineLabs.Saving
 
                 // We allow component stage to run in parallel with the intentional of writing to different components
                 // Every other stage runs sequentially
-                var count = deserializers.Components.Length + deserializers.Buffers.Length + 1;
+                var count = deserializers.Components.Length + deserializers.Buffers.Length;
                 var handles = new NativeArray<JobHandle>(count, Allocator.Temp);
                 var index = 0;
-
-                handles[index++] = this.subSceneRecordSaver.Deserialize(deserializers.SubSceneRecordSaver, entityMapper, dependency);
 
                 foreach (var deserializer in deserializers.Components)
                 {
@@ -549,13 +568,7 @@ namespace BovineLabs.Saving
                     return true;
                 }
 
-                if (this.subSceneRecordSaver.Key == header.Key)
-                {
-                    map.SubSceneRecordSaver = deserializer;
-                    return true;
-                }
-
-                Debug.LogWarning($"No saver or migration was found or the migration failed for {header.Key}. This data will not be deserialized. If intentional ignore.");
+                Debug.LogWarning($"No saver or migration was found or the migration failed for {header.Key}. This data will not be deserialized.");
                 return false;
             }
         }
@@ -574,7 +587,7 @@ namespace BovineLabs.Saving
                     return;
                 }
 
-                var src = (byte*)this.SaveData.GetUnsafeReadOnlyPtr();
+                var src = this.SaveData.GetUnsafeReadOnlyPtr();
                 var compressedLength = CodecService.Compress(src, this.SaveData.Length, out var dst);
 
                 this.SaveData.Clear();
@@ -620,7 +633,7 @@ namespace BovineLabs.Saving
         [BurstCompile]
         private struct CalculateKeyIndexMapJob : IJob
         {
-            public NativeParallelHashMap<ulong, int> KeyIndexMap;
+            public NativeHashMap<ulong, int> KeyIndexMap;
             public NativeReference<int> StartIndex;
 
             [ReadOnly]
@@ -665,7 +678,7 @@ namespace BovineLabs.Saving
             public NativeList<byte> Input;
 
             [ReadOnly]
-            public NativeParallelHashMap<ulong, int> KeyIndexMap;
+            public NativeHashMap<ulong, int> KeyIndexMap;
 
             public ulong Key;
 
@@ -703,7 +716,6 @@ namespace BovineLabs.Saving
             public NativeList<(ulong Key, Deserializer Deserializer)> Buffers;
             public Deserializer SavablePrefabSaver;
             public Deserializer SavableSceneSaver;
-            public Deserializer SubSceneRecordSaver;
 
             public DeserializeMap(Allocator allocator)
             {
@@ -711,7 +723,6 @@ namespace BovineLabs.Saving
                 this.Buffers = new NativeList<(ulong, Deserializer)>(allocator);
                 this.SavablePrefabSaver = default;
                 this.SavableSceneSaver = default;
-                this.SubSceneRecordSaver = default;
             }
         }
     }

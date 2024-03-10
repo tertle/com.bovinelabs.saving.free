@@ -1,37 +1,37 @@
-using Unity.Burst;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
 
-namespace Samples.Boids
+namespace Boids
 {
-    [BurstCompile]
-    public partial struct SampledAnimationClipPlaybackSystem : ISystem
+    public struct SampledAnimationClip : IComponentData
     {
-        [BurstCompile]
-        public void OnCreate(ref SystemState state)
-        {
-        }
+        public float SampleRate;
+        public int FrameCount;
 
-        [BurstCompile]
-        public void OnDestroy(ref SystemState state)
-        {
-        }
+        // Playback State
+        public float CurrentTime;
+        public int FrameIndex;
+        public float TimeOffset;
 
-        [BurstCompile]
-        public void OnUpdate(ref SystemState state)
+        public BlobAssetReference<TransformSamples> TransformSamplesBlob;
+    }
+
+    [WriteGroup(typeof(LocalTransform))]
+    public struct TransformSamples
+    {
+        public BlobArray<float3> TranslationSamples;
+        public BlobArray<quaternion> RotationSamples;
+    }
+
+    [RequireMatchingQueriesForUpdate]
+    public partial class SampledAnimationClipPlaybackSystem : SystemBase
+    {
+        protected override void OnUpdate()
         {
-            new AnimateTransformJob().ScheduleParallel();
-            new UpdateAnimationJob
-            {
-                DeltaTime = math.min(0.05f, SystemAPI.Time.DeltaTime)
-            }.ScheduleParallel();
-        }
-        
-        [BurstCompile]
-        public partial struct AnimateTransformJob : IJobEntity
-        {
-            public void Execute(ref LocalTransform transform, in SampledAnimationClip sampledAnimationClip)
+            var deltaTime = math.min(0.05f, SystemAPI.Time.DeltaTime);
+
+            Entities.ForEach((ref LocalTransform transform, in SampledAnimationClip sampledAnimationClip) =>
             {
                 var frameIndex = sampledAnimationClip.FrameIndex;
                 var timeOffset = sampledAnimationClip.TimeOffset;
@@ -44,17 +44,11 @@ namespace Samples.Boids
 
                 transform.Position = math.lerp(prevTranslation, nextTranslation, timeOffset);
                 transform.Rotation = math.slerp(prevRotation, nextRotation, timeOffset);
-            }
-        }
-        
-        [BurstCompile]
-        public partial struct UpdateAnimationJob : IJobEntity
-        {
-            public float DeltaTime;
+            }).ScheduleParallel();
 
-            public void Execute(ref SampledAnimationClip sampledAnimationClip)
+            Entities.ForEach((ref SampledAnimationClip sampledAnimationClip) =>
             {
-                var currentTime = sampledAnimationClip.CurrentTime + DeltaTime;
+                var currentTime = sampledAnimationClip.CurrentTime + deltaTime;
                 var sampleRate = sampledAnimationClip.SampleRate;
                 var frameIndex = (int)(currentTime / sampledAnimationClip.SampleRate);
                 var timeOffset = (currentTime - (frameIndex * sampleRate)) * (1.0f / sampleRate);
@@ -73,7 +67,7 @@ namespace Samples.Boids
                 sampledAnimationClip.CurrentTime = currentTime;
                 sampledAnimationClip.FrameIndex = frameIndex;
                 sampledAnimationClip.TimeOffset = timeOffset;
-            }
+            }).ScheduleParallel();
         }
     }
 }

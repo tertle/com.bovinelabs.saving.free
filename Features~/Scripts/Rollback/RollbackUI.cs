@@ -5,7 +5,7 @@
 namespace BovineLabs.Saving.Samples.Rollback
 {
     // using global::Samples.Boids;
-    using global::Samples.Boids;
+    using Boids;
     using Unity.Entities;
     using UnityEngine;
     using UnityEngine.UI;

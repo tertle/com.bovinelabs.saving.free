@@ -92,11 +92,11 @@ namespace BovineLabs.Saving
             return ptr;
         }
 
-        /// <summary> Increment the <see cref="CurrentIndex"/> by <see cref="length"/>. </summary>
-        /// <param name="length"> The value to increment <see cref="CurrentIndex"/> by. </param>
-        public void Offset(int length)
+        /// <summary> Increment the <see cref="CurrentIndex"/> by <see cref="size"/>. </summary>
+        /// <param name="size"> The value to increment <see cref="CurrentIndex"/> by. </param>
+        public void Offset(int size)
         {
-            this.CurrentIndex += length;
+            this.CurrentIndex += size;
         }
 
         /// <summary> Increment the <see cref="CurrentIndex"/> by sizeof(T). </summary>

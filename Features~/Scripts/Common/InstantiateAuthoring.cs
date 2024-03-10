@@ -1,8 +1,8 @@
 // <copyright file="InstantiateAuthoring.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
-namespace BovineLabs.Saving
+namespace BovineLabs.Saving.Samples.Common
 {
     using Unity.Burst;
     using Unity.Collections;
@@ -23,7 +23,12 @@ namespace BovineLabs.Saving
     {
         public override void Bake(InstantiateAuthoring authoring)
         {
-            AddComponent(new Instantiate { Prefab = this.GetEntity(authoring.Prefab) });
+            this.AddComponent(
+                this.GetEntity(TransformUsageFlags.None),
+                new Instantiate
+                {
+                    Prefab = this.GetEntity(authoring.Prefab, TransformUsageFlags.None),
+                });
         }
     }
 

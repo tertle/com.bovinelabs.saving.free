@@ -5,8 +5,8 @@
 namespace BovineLabs.Saving
 {
     using System;
+    using BovineLabs.Core.Assertions;
     using Unity.Collections;
-    using Unity.Collections.LowLevel.Unsafe;
     using Unity.Entities;
 
     /// <summary> SaveBuilder is a class for setting up various configurations for saving. </summary>
@@ -15,12 +15,13 @@ namespace BovineLabs.Saving
         private NativeList<ComponentType> all;
         private NativeList<ComponentType> any;
         private NativeList<ComponentType> none;
-        private NativeList<ComponentType> componentSavers;
 
-        private NativeList<ComponentType> bufferSavers;
+        private NativeList<ComponentSaveState> componentSavers;
+        private NativeList<ComponentSaveState> bufferSavers;
 
         // private readonly NativeList<ISaver> customSavers = new(); // TODO don't forget to clone
         private NativeList<EntityQuery> entityQueries;
+        private NativeList<EntityQuery> unfilteredEntityQueries;
 
         private bool includeDisabled;
         private bool subSceneSaver;
@@ -38,9 +39,10 @@ namespace BovineLabs.Saving
             this.all = new NativeList<ComponentType>(allocator);
             this.any = new NativeList<ComponentType>(allocator);
             this.none = new NativeList<ComponentType>(allocator);
-            this.componentSavers = new NativeList<ComponentType>(allocator);
-            this.bufferSavers = new NativeList<ComponentType>(allocator);
+            this.componentSavers = new NativeList<ComponentSaveState>(allocator);
+            this.bufferSavers = new NativeList<ComponentSaveState>(allocator);
             this.entityQueries = new NativeList<EntityQuery>(allocator);
+            this.unfilteredEntityQueries = new NativeList<EntityQuery>(allocator);
 
             this.includeDisabled = false;
             this.subSceneSaver = false;
@@ -56,11 +58,13 @@ namespace BovineLabs.Saving
 
         // internal IEnumerable<ISaver> CustomSavers => this.customSavers; // TODO support again
 
-        internal NativeArray<ComponentType> ComponentSavers => this.componentSavers.AsArray();
+        internal NativeArray<ComponentSaveState> ComponentSavers => this.componentSavers.AsArray();
 
-        internal NativeArray<ComponentType> BufferSavers => this.bufferSavers.AsArray();
+        internal NativeArray<ComponentSaveState> BufferSavers => this.bufferSavers.AsArray();
 
         internal NativeArray<EntityQuery>.ReadOnly EntityQueries => this.entityQueries.AsArray().AsReadOnly();
+
+        internal NativeArray<EntityQuery>.ReadOnly EntityUnfilteredQueries => this.unfilteredEntityQueries.AsArray().AsReadOnly();
 
         internal bool DisableAutoCreateSavers { get; private set; }
 
@@ -77,17 +81,26 @@ namespace BovineLabs.Saving
             this.componentSavers.Dispose();
             this.bufferSavers.Dispose();
             this.entityQueries.Dispose();
+            this.unfilteredEntityQueries.Dispose();
         }
 
         /// <summary> Create a query from the current configuration. </summary>
-        /// <param name="extraAllType"> Optional extra All types that can be included in the query. </param>
+        /// <param name="extraAllTypes"> Optional extra All types that can be included in the query. </param>
         /// <returns> A entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
-        public EntityQuery GetQuery(ComponentType extraAllType = default)
+        public EntityQuery GetQuery(ReadOnlySpan<ComponentType> extraAllTypes = default)
         {
-            var desc = this.CreateDescription(extraAllType);
+            var desc = this.CreateDescription(extraAllTypes);
             var query = desc.Build(ref this.System);
             this.entityQueries.Add(query);
             return query;
+        }
+
+        /// <summary> Create a query from the current configuration. </summary>
+        /// <param name="extraAllType"> Optional extra All type that can be included in the query. </param>
+        /// <returns> A entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
+        public EntityQuery GetQuery(ComponentType extraAllType)
+        {
+            return this.GetQuery(new ReadOnlySpan<ComponentType>(&extraAllType, 1));
         }
 
         /// <summary> Add new components to the All field in the EntityQueryDesc. </summary>
@@ -198,17 +211,36 @@ namespace BovineLabs.Saving
         //     return this;
         // }
 
-        public SaveBuilder WithComponentSaver<T>()
+        public SaveBuilder WithComponentSaver<T>(SaveFeature feature = SaveFeature.None)
             where T : unmanaged, IComponentData
         {
-            this.componentSavers.Add(ComponentType.ReadWrite<T>());
+            this.componentSavers.Add(new ComponentSaveState(ComponentType.ReadWrite<T>(), feature, null));
             return this;
         }
 
-        public SaveBuilder WithBufferSaver<T>()
+        public SaveBuilder WithBufferSaver<T>(SaveFeature feature = SaveFeature.None)
             where T : unmanaged, IBufferElementData
         {
-            this.bufferSavers.Add(typeof(T));
+            this.bufferSavers.Add(new ComponentSaveState(ComponentType.ReadWrite<T>(), feature, null));
+            return this;
+        }
+
+        public SaveBuilder WithComponentSaver(ComponentSaveState state)
+        {
+            var componentType = ComponentType.FromTypeIndex(TypeManager.GetTypeIndexFromStableTypeHash(state.StableTypeHash));
+
+            Check.Assume(!componentType.IsManagedComponent, "Saving managed states is not support");
+            Check.Assume(componentType.IsComponent || componentType.IsBuffer, "Must be buffer or component");
+
+            if (componentType.IsComponent)
+            {
+                this.componentSavers.Add(state);
+            }
+            else
+            {
+                this.bufferSavers.Add(state);
+            }
+
             return this;
         }
 
@@ -290,7 +322,18 @@ namespace BovineLabs.Saving
             return sb;
         }
 
-        private EntityQueryBuilder CreateDescription(ComponentType extraAllType = default)
+        /// <summary> Create a query from the current configuration. </summary>
+        /// <param name="extraAllTypes"> Optional extra All types that can be included in the query. </param>
+        /// <returns> A entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
+        internal EntityQuery GetQueryUnfiltered(ReadOnlySpan<ComponentType> extraAllTypes = default)
+        {
+            var desc = this.CreateUnfilteredDescription(extraAllTypes);
+            var query = desc.Build(ref this.System);
+            this.unfilteredEntityQueries.Add(query);
+            return query;
+        }
+
+        private EntityQueryBuilder CreateDescription(ReadOnlySpan<ComponentType> extraAllType)
         {
             var allTypes = new NativeList<ComponentType>(this.all.Length, Allocator.Temp);
             var noneTypes = new NativeList<ComponentType>(this.none.Length, Allocator.Temp);
@@ -311,15 +354,41 @@ namespace BovineLabs.Saving
                 noneTypes.Add(ComponentType.ReadOnly<SceneSection>());
             }
 
-            if (extraAllType != default)
+            foreach (var c in extraAllType)
             {
-                allTypes.Add(extraAllType);
+                allTypes.Add(c);
             }
 
             return new EntityQueryBuilder(Allocator.Temp)
                 .WithAll(ref allTypes)
                 .WithNone(ref noneTypes)
                 .WithAny(ref anyTypes)
+                .WithOptions((this.includeDisabled ? EntityQueryOptions.IncludeDisabledEntities : EntityQueryOptions.Default) |
+                             EntityQueryOptions.IgnoreComponentEnabledState);
+        }
+
+        private EntityQueryBuilder CreateUnfilteredDescription(ReadOnlySpan<ComponentType> extraAllType)
+        {
+            var allTypes = new NativeList<ComponentType>(this.all.Length, Allocator.Temp);
+            var noneTypes = new NativeList<ComponentType>(this.none.Length, Allocator.Temp);
+
+            if (this.subSceneSaver)
+            {
+                allTypes.Add(ComponentType.ReadOnly<SceneSection>());
+            }
+            else
+            {
+                noneTypes.Add(ComponentType.ReadOnly<SceneSection>());
+            }
+
+            foreach (var c in extraAllType)
+            {
+                allTypes.Add(c);
+            }
+
+            return new EntityQueryBuilder(Allocator.Temp)
+                .WithAll(ref allTypes)
+                .WithNone(ref noneTypes)
                 .WithOptions((this.includeDisabled ? EntityQueryOptions.IncludeDisabledEntities : EntityQueryOptions.Default) |
                              EntityQueryOptions.IgnoreComponentEnabledState);
         }

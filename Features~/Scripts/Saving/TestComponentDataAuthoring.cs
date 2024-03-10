@@ -1,4 +1,4 @@
-﻿// <copyright file="TestComponentData.cs" company="BovineLabs">
+﻿// <copyright file="TestComponentDataAuthoring.cs" company="BovineLabs">
 //     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
@@ -11,27 +11,33 @@ namespace BovineLabs.Saving.Samples.Saving
     public struct TestComponentData : IComponentData
     {
         public int Value0;
-        [SaveIgnore] public int Value1;
+
+        [SaveIgnore]
+        public int Value1;
+
         public byte Value2;
     }
 
     public class TestComponentDataAuthoring : MonoBehaviour
     {
         public int Value0;
-        [SaveIgnore] public int Value1;
-        public byte Value2;
-    }
 
-    public class TestComponentDataBaker : Baker<TestComponentDataAuthoring>
-    {
-        public override void Bake(TestComponentDataAuthoring authoring)
+        [SaveIgnore]
+        public int Value1;
+
+        public byte Value2;
+
+        private class Baker : Baker<TestComponentDataAuthoring>
         {
-            AddComponent(new TestComponentData
+            public override void Bake(TestComponentDataAuthoring authoring)
             {
-                Value0 = authoring.Value0,
-                Value1 = authoring.Value1,
-                Value2 = authoring.Value2,
-            });
+                AddComponent(this.GetEntity(TransformUsageFlags.None), new TestComponentData
+                {
+                    Value0 = authoring.Value0,
+                    Value1 = authoring.Value1,
+                    Value2 = authoring.Value2,
+                });
+            }
         }
     }
 }

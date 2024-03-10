@@ -2,61 +2,34 @@ using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Burst;
-using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Transforms;
 
 // Mike's GDC Talk on 'A Data Oriented Approach to Using Component Systems'
 // is a great reference for dissecting the Boids sample code:
 // https://youtu.be/p65Yt20pw0g?t=1446
-// It explains an older implementation of this sample, but almost all the
+// It explains a slightly older implementation of this sample but almost all the
 // information is still relevant.
 
 // The targets (2 red fish) and obstacle (1 shark) move based on the ActorAnimation tab
 // in the Unity UI, so that they are moving based on key-framed animation.
 
-namespace Samples.Boids
+namespace Boids
 {
+    [RequireMatchingQueriesForUpdate]
     [UpdateInGroup(typeof(SimulationSystemGroup))]
     [UpdateBefore(typeof(TransformSystemGroup))]
-    [BurstCompile]
     public partial struct BoidSystem : ISystem
     {
-        EntityQuery  m_BoidQuery;
-        EntityQuery  m_TargetQuery;
-        EntityQuery  m_ObstacleQuery;
-
-        // In this sample there are 3 total unique boid variants, one for each unique value of the
-        // Boid SharedComponent (note: this includes the default uninitialized value at
-        // index 0, which isnt actually used in the sample).
-
-        [BurstCompile]
-        public void OnCreate(ref SystemState state)
-        {
-            using var queryBuilder = new EntityQueryBuilder(Allocator.Temp)
-                .WithAll<Boid>()
-                .WithAllRW<LocalToWorld>();
-            m_BoidQuery = state.GetEntityQuery(queryBuilder);
-
-            queryBuilder.Reset();
-            queryBuilder.WithAll<BoidTarget, LocalToWorld>();
-            m_TargetQuery = state.GetEntityQuery(queryBuilder);
-
-            queryBuilder.Reset();
-            queryBuilder.WithAll<BoidObstacle, LocalToWorld>();
-            m_ObstacleQuery = state.GetEntityQuery(queryBuilder);
-        }
-
-        [BurstCompile]
-        public void OnDestroy(ref SystemState state)
-        {
-        }
-
         [BurstCompile]
         public void OnUpdate(ref SystemState state)
         {
-            var obstacleCount = m_ObstacleQuery.CalculateEntityCount();
-            var targetCount = m_TargetQuery.CalculateEntityCount();
+            var boidQuery = SystemAPI.QueryBuilder().WithAll<Boid>().WithAllRW<LocalToWorld>().Build();
+            var targetQuery = SystemAPI.QueryBuilder().WithAll<BoidTarget, LocalToWorld>().Build();
+            var obstacleQuery = SystemAPI.QueryBuilder().WithAll<BoidObstacle, LocalToWorld>().Build();
+
+            var obstacleCount = obstacleQuery.CalculateEntityCount();
+            var targetCount = targetQuery.CalculateEntityCount();
 
             var world = state.WorldUnmanaged;
             state.EntityManager.GetAllUniqueSharedComponents(out NativeList<Boid> uniqueBoidTypes, world.UpdateAllocator.ToAllocator);
@@ -67,15 +40,15 @@ namespace Samples.Boids
             // variant type individually.
             foreach (var boidSettings in uniqueBoidTypes)
             {
-                m_BoidQuery.AddSharedComponentFilter(boidSettings);
+                boidQuery.AddSharedComponentFilter(boidSettings);
 
-                var boidCount = m_BoidQuery.CalculateEntityCount();
+                var boidCount = boidQuery.CalculateEntityCount();
                 if (boidCount == 0)
                 {
                     // Early out. If the given variant includes no Boids, move on to the next loop.
                     // For example, variant 0 will always exit early bc it's it represents a default, uninitialized
                     // Boid struct, which does not appear in this sample.
-                    m_BoidQuery.ResetFilter();
+                    boidQuery.ResetFilter();
                     continue;
                 }
 
@@ -99,13 +72,13 @@ namespace Samples.Boids
                 // input dependencies when the jobs are scheduled; thus, they can run in any order (or concurrently).
                 // The concurrency is property of how they're scheduled, not of the job structs themselves.
 
-                var boidChunkBaseEntityIndexArray = m_BoidQuery.CalculateBaseEntityIndexArrayAsync(
+                var boidChunkBaseEntityIndexArray = boidQuery.CalculateBaseEntityIndexArrayAsync(
                     world.UpdateAllocator.ToAllocator, state.Dependency,
                     out var boidChunkBaseIndexJobHandle);
-                var targetChunkBaseEntityIndexArray = m_TargetQuery.CalculateBaseEntityIndexArrayAsync(
+                var targetChunkBaseEntityIndexArray = targetQuery.CalculateBaseEntityIndexArrayAsync(
                     world.UpdateAllocator.ToAllocator, state.Dependency,
                     out var targetChunkBaseIndexJobHandle);
-                var obstacleChunkBaseEntityIndexArray = m_ObstacleQuery.CalculateBaseEntityIndexArrayAsync(
+                var obstacleChunkBaseEntityIndexArray = obstacleQuery.CalculateBaseEntityIndexArrayAsync(
                     world.UpdateAllocator.ToAllocator, state.Dependency,
                     out var obstacleChunkBaseIndexJobHandle);
                 // These jobs extract the relevant position, heading component
@@ -119,21 +92,21 @@ namespace Samples.Boids
                     ParallelHashMap = hashMap.AsParallelWriter(),
                     InverseBoidCellRadius = 1.0f / boidSettings.CellRadius,
                 };
-                var initialBoidJobHandle = initialBoidJob.ScheduleParallel(m_BoidQuery, boidChunkBaseIndexJobHandle);
+                var initialBoidJobHandle = initialBoidJob.ScheduleParallel(boidQuery, boidChunkBaseIndexJobHandle);
 
                 var initialTargetJob = new InitialPerTargetJob
                 {
                     ChunkBaseEntityIndices = targetChunkBaseEntityIndexArray,
                     TargetPositions = copyTargetPositions,
                 };
-                var initialTargetJobHandle = initialTargetJob.ScheduleParallel(m_TargetQuery, targetChunkBaseIndexJobHandle);
+                var initialTargetJobHandle = initialTargetJob.ScheduleParallel(targetQuery, targetChunkBaseIndexJobHandle);
 
                 var initialObstacleJob = new InitialPerObstacleJob
                 {
                     ChunkBaseEntityIndices = obstacleChunkBaseEntityIndexArray,
                     ObstaclePositions = copyObstaclePositions,
                 };
-                var initialObstacleJobHandle = initialObstacleJob.ScheduleParallel(m_ObstacleQuery, obstacleChunkBaseIndexJobHandle);
+                var initialObstacleJobHandle = initialObstacleJob.ScheduleParallel(obstacleQuery, obstacleChunkBaseIndexJobHandle);
 
                 var initialCellCountJob = new MemsetNativeArray<int>
                 {
@@ -179,7 +152,7 @@ namespace Samples.Boids
                     DeltaTime = dt,
                     MoveDistance = boidSettings.MoveSpeed * dt,
                 };
-                var steerBoidJobHandle = steerBoidJob.ScheduleParallel(m_BoidQuery, mergeCellsJobHandle);
+                var steerBoidJobHandle = steerBoidJob.ScheduleParallel(boidQuery, mergeCellsJobHandle);
 
                 // Dispose allocated containers with dispose jobs.
                 state.Dependency = steerBoidJobHandle;
@@ -189,12 +162,15 @@ namespace Samples.Boids
                 // the add dependency call here, the safety system will throw an error, because we're accessing multiple
                 // pieces of boid data and it would think there could possibly be a race condition.
 
-                m_BoidQuery.AddDependency(state.Dependency);
-                m_BoidQuery.ResetFilter();
+                boidQuery.AddDependency(state.Dependency);
+                boidQuery.ResetFilter();
             }
             uniqueBoidTypes.Dispose();
         }
 
+                // In this sample there are 3 total unique boid variants, one for each unique value of the
+        // Boid SharedComponent (note: this includes the default uninitialized value at
+        // index 0, which isnt actually used in the sample).
 
         // This accumulates the `positions` (separations) and `headings` (alignments) of all the boids in each cell to:
         // 1) count the number of boids in each cell
@@ -202,10 +178,10 @@ namespace Samples.Boids
         // 3) track which array entry contains the accumulated values for each boid's cell
         // In this context, the cell represents the hashed bucket of boids that are near one another within cellRadius
         // floored to the nearest int3.
-        // Note: `IJobNativeMultiHashMapMergedSharedKeyIndices` is a custom job to iterate safely/efficiently over the
-        // NativeContainer used in this sample (`NativeMultiHashMap`). Currently these kinds of changes or additions of
+        // Note: `IJobNativeParallelMultiHashMapMergedSharedKeyIndices` is a custom job to iterate safely/efficiently over the
+        // NativeContainer used in this sample (`NativeParallelMultiHashMap`). Currently these kinds of changes or additions of
         // custom jobs generally require access to data/fields that aren't available through the `public` API of the
-        // containers. This is why the custom job type `IJobNativeMultiHashMapMergedSharedKeyIndicies` is declared in
+        // containers. This is why the custom job type `IJobNativeParallelMultiHashMapMergedSharedKeyIndicies` is declared in
         // the DOTS package (which can see the `internal` container fields) and not in the Boids sample.
         [BurstCompile]
         struct MergeCells : IJobNativeMultiHashMapMergedSharedKeyIndices

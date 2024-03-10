@@ -8,6 +8,7 @@ namespace BovineLabs.Saving
     using System.Collections.Generic;
     using System.Reflection;
     using System.Runtime.CompilerServices;
+    using BovineLabs.Core.Assertions;
     using Unity.Assertions;
     using Unity.Burst.Intrinsics;
     using Unity.Collections;
@@ -18,12 +19,15 @@ namespace BovineLabs.Saving
     public unsafe struct ComponentSave : IDisposable
     {
         private readonly SystemState* systemState;
+        private EntityQuery commandBufferQuery;
 
-        public ComponentSave(SaveBuilder builder, ulong stableTypeHash)
+        public ComponentSave(SaveBuilder builder, ComponentSaveState state)
         {
             this.systemState = builder.SystemPtr;
-            this.TypeIndex = TypeManager.GetTypeIndexFromStableTypeHash(stableTypeHash);
+            this.TypeIndex = TypeManager.GetTypeIndexFromStableTypeHash(state.StableTypeHash);
             this.TypeInfo = TypeManager.GetTypeInfo(this.TypeIndex);
+
+            this.Feature = state.Feature;
 
             Assert.IsFalse(this.TypeIndex.IsManagedType);
 
@@ -32,10 +36,24 @@ namespace BovineLabs.Saving
             this.EntityOffsets = default;
             this.SaveChunks = default;
 
-            this.CreateComponentInfo();
+            if (this.Feature != SaveFeature.None)
+            {
+                this.commandBufferQuery = new EntityQueryBuilder(Allocator.Temp)
+                    .WithAll<EndInitializationEntityCommandBufferSystem.Singleton>()
+                    .WithOptions(EntityQueryOptions.IncludeSystems)
+                    .Build(ref builder.System);
+            }
+            else
+            {
+                this.commandBufferQuery = default;
+            }
+
+            this.CreateComponentInfo(state);
         }
 
         public ref SystemState System => ref *this.systemState;
+
+        public SaveFeature Feature { get; }
 
         public TypeIndex TypeIndex { get; }
 
@@ -54,7 +72,6 @@ namespace BovineLabs.Saving
             *entity = remap.TryGetEntity(*entity, out var newEntity) ? newEntity : Entity.Null;
         }
 
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsSet(v128 v, int pos)
         {
@@ -72,7 +89,12 @@ namespace BovineLabs.Saving
             this.EntityOffsets.Dispose();
         }
 
-        private void CreateComponentInfo()
+        public EntityCommandBuffer CreateCommandBuffer()
+        {
+            return this.commandBufferQuery.GetSingleton<EndInitializationEntityCommandBufferSystem.Singleton>().CreateCommandBuffer(this.System.WorldUnmanaged);
+        }
+
+        private void CreateComponentInfo(ComponentSaveState state)
         {
             var type = TypeManager.GetType(this.TypeIndex);
 
@@ -80,27 +102,52 @@ namespace BovineLabs.Saving
             var chunks = new List<SaveChunk>();
             var startIndex = 0;
 
-            foreach (var field in fields)
+            if (state.SaveIgnoreLength > 0)
             {
-                var offset = UnsafeUtility.GetFieldOffset(field);
-                var size = UnsafeUtility.SizeOf(field.FieldType);
+                Check.Assume(fields.Length <= byte.MaxValue);
 
-                if (field.IsDefined(typeof(SaveIgnoreAttribute), false))
+                for (byte index = 0; index < fields.Length; index++)
                 {
-                    // Offset will equal startIndex if SaveIgnore is on the first field or if there are multiple SaveIgnore fields in a row
-                    if (offset > startIndex)
-                    {
-                        chunks.Add(new SaveChunk(startIndex, offset - startIndex));
-                    }
+                    var field = fields[index];
+                    var offset = UnsafeUtility.GetFieldOffset(field);
+                    var size = UnsafeUtility.SizeOf(field.FieldType);
 
-                    startIndex = offset + size;
+                    if (state.IsIgnored(index))
+                    {
+                        // Offset will equal startIndex if ignored is on the first field or if there are multiple SaveIgnore fields in a row
+                        if (offset > startIndex)
+                        {
+                            chunks.Add(new SaveChunk(startIndex, offset - startIndex));
+                        }
+
+                        startIndex = offset + size;
+                    }
+                }
+            }
+            else
+            {
+                foreach (var field in fields)
+                {
+                    var offset = UnsafeUtility.GetFieldOffset(field);
+                    var size = UnsafeUtility.SizeOf(field.FieldType);
+
+                    if (field.IsDefined(typeof(SaveIgnoreAttribute), false))
+                    {
+                        // Offset will equal startIndex if SaveIgnore is on the first field or if there are multiple SaveIgnore fields in a row
+                        if (offset > startIndex)
+                        {
+                            chunks.Add(new SaveChunk(startIndex, offset - startIndex));
+                        }
+
+                        startIndex = offset + size;
+                    }
                 }
             }
 
-            // If we aren't add end we need to add 1 more chunk. This also handles the case with no SaveIgnore attributes.
+            // If we aren't at end we need to add 1 more chunk. This also handles the case with no SaveIgnore attributes.
             if (startIndex != UnsafeUtility.SizeOf(type))
             {
-                chunks.Add(new SaveChunk(startIndex, UnsafeUtility.SizeOf(type)));
+                chunks.Add(new SaveChunk(startIndex, UnsafeUtility.SizeOf(type) - startIndex));
             }
 
             // Enforce LayoutSequential for any component using SaveIgnore

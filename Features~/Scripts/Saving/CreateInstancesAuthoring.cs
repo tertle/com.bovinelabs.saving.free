@@ -28,9 +28,6 @@ namespace BovineLabs.Saving.Samples.Saving
         [SerializeField]
         private Pair[] spawners;
 
-        public Pair[] Spawners => this.spawners;
-
-
         [Serializable]
         public class Pair
         {
@@ -39,23 +36,23 @@ namespace BovineLabs.Saving.Samples.Saving
             public Vector3 MinPosition = Util.Min;
             public Vector3 MaxPosition = Util.Max;
         }
-    }
 
-    public class CreateInstanceBaker : Baker<CreateInstancesAuthoring>
-    {
-        public override void Bake(CreateInstancesAuthoring authoring)
+        private class Baker : Baker<CreateInstancesAuthoring>
         {
-            var spawner = this.AddBuffer<CreateInstances>();
-
-            foreach (var p in authoring.Spawners)
+            public override void Bake(CreateInstancesAuthoring authoring)
             {
-                spawner.Add(new CreateInstances
+                var spawner = this.AddBuffer<CreateInstances>(this.GetEntity(TransformUsageFlags.None));
+
+                foreach (var p in authoring.spawners)
                 {
-                    Prefab = this.GetEntity(p.Prefab),
-                    Count = p.Count,
-                    MinPosition = p.MinPosition,
-                    MaxPosition = p.MaxPosition,
-                });
+                    spawner.Add(new CreateInstances
+                    {
+                        Prefab = this.GetEntity(p.Prefab, TransformUsageFlags.None),
+                        Count = p.Count,
+                        MinPosition = p.MinPosition,
+                        MaxPosition = p.MaxPosition,
+                    });
+                }
             }
         }
     }
@@ -65,6 +62,7 @@ namespace BovineLabs.Saving.Samples.Saving
     {
         public void OnCreate(ref SystemState state)
         {
+            state.RequireForUpdate<CreateInstances>();
         }
 
         public void OnDestroy(ref SystemState state)
@@ -98,15 +96,14 @@ namespace BovineLabs.Saving.Samples.Saving
                     {
                         foreach (var e in newEntities)
                         {
-                            state.EntityManager.SetComponentData(e, new LocalToWorld { Value = float4x4.Translate(r.NextFloat3(spawner.MinPosition, spawner.MaxPosition)) });
+                            state.EntityManager.SetComponentData(e,
+                                new LocalToWorld { Value = float4x4.Translate(r.NextFloat3(spawner.MinPosition, spawner.MaxPosition)) });
                         }
                     }
                 }
 
                 state.EntityManager.DestroyEntity(entity);
             }
-
-            state.Enabled = false;
         }
     }
 }

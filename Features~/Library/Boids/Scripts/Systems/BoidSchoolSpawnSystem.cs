@@ -6,84 +6,67 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Transforms;
 using UnityEngine.Profiling;
-using UnityEngine.SocialPlatforms;
 
-namespace Samples.Boids
+namespace Boids
 {
+    [RequireMatchingQueriesForUpdate]
     [BurstCompile]
     public partial struct BoidSchoolSpawnSystem : ISystem
     {
-        public ComponentLookup<LocalToWorld> LocalToWorldLookup;
-        private EntityQuery SchoolQuery;
-        
-        [BurstCompile]
-        public void OnCreate(ref SystemState state)
-        {
-            SchoolQuery = SystemAPI.QueryBuilder().WithAll<BoidSchool, LocalToWorld>().Build();
-            LocalToWorldLookup = SystemAPI.GetComponentLookup<LocalToWorld>();
-            
-            state.RequireForUpdate(SchoolQuery);
-        }
-
-        [BurstCompile]
-        public void OnDestroy(ref SystemState state)
-        {
-        }
-
-        [BurstCompile]
         public void OnUpdate(ref SystemState state)
         {
-            LocalToWorldLookup.Update(ref state);
+            var localToWorldLookup = SystemAPI.GetComponentLookup<LocalToWorld>();
+            var ecb = new EntityCommandBuffer(Allocator.Temp);
+            var world = state.World.Unmanaged;
 
-            var boidSchools = SchoolQuery.ToComponentDataArray<BoidSchool>(Allocator.Temp);
-            var localToWorlds = SchoolQuery.ToComponentDataArray<LocalToWorld>(Allocator.Temp);
-            var schoolEntities = SchoolQuery.ToEntityArray(Allocator.Temp);
-
-            var world = state.WorldUnmanaged;
-            
-            for (int i = 0; i < boidSchools.Length; i++)
+            foreach (var (boidSchool, boidSchoolLocalToWorld, entity) in
+                     SystemAPI.Query<RefRO<BoidSchool>, RefRO<LocalToWorld>>()
+                         .WithEntityAccess())
             {
-                var boidEntities = CollectionHelper.CreateNativeArray<Entity, RewindableAllocator>(boidSchools[i].Count, ref world.UpdateAllocator);
-                state.EntityManager.Instantiate(boidSchools[i].Prefab, boidEntities);
+                var boidEntities =
+                    CollectionHelper.CreateNativeArray<Entity, RewindableAllocator>(boidSchool.ValueRO.Count,
+                        ref world.UpdateAllocator);
 
-                var job = new SetBoidLocalToWorld
+                state.EntityManager.Instantiate(boidSchool.ValueRO.Prefab, boidEntities);
+
+                var setBoidLocalToWorldJob = new SetBoidLocalToWorld
                 {
-                    LocalToWorldFromEntity = LocalToWorldLookup,
+                    LocalToWorldFromEntity = localToWorldLookup,
                     Entities = boidEntities,
-                    Center = localToWorlds[i].Position,
-                    Radius = boidSchools[i].InitialRadius
+                    Center = boidSchoolLocalToWorld.ValueRO.Position,
+                    Radius = boidSchool.ValueRO.InitialRadius
                 };
-                state.Dependency = job.Schedule(boidSchools[i].Count, 1000, state.Dependency);
-            }
-            
-            state.EntityManager.DestroyEntity(schoolEntities);
-        }
+                state.Dependency = setBoidLocalToWorldJob.Schedule(boidSchool.ValueRO.Count, 64, state.Dependency);
+                state.Dependency.Complete();
 
-        [BurstCompile]
-        struct SetBoidLocalToWorld : IJobParallelFor
+                ecb.DestroyEntity(entity);
+            }
+
+            ecb.Playback(state.EntityManager);
+        }
+    }
+
+    [BurstCompile]
+    struct SetBoidLocalToWorld : IJobParallelFor
+    {
+        [NativeDisableContainerSafetyRestriction] [NativeDisableParallelForRestriction]
+        public ComponentLookup<LocalToWorld> LocalToWorldFromEntity;
+
+        public NativeArray<Entity> Entities;
+        public float3 Center;
+        public float Radius;
+
+        public void Execute(int i)
         {
-            [NativeDisableContainerSafetyRestriction]
-            [NativeDisableParallelForRestriction]
-            public ComponentLookup<LocalToWorld> LocalToWorldFromEntity;
-
-            public NativeArray<Entity> Entities;
-            public float3 Center;
-            public float Radius;
-
-            public void Execute(int i)
+            var entity = Entities[i];
+            var random = new Random(((uint)(entity.Index + i + 1) * 0x9F6ABC1));
+            var dir = math.normalizesafe(random.NextFloat3() - new float3(0.5f, 0.5f, 0.5f));
+            var pos = Center + (dir * Radius);
+            var localToWorld = new LocalToWorld
             {
-                var entity = Entities[i];
-                var random = new Random(((uint)(entity.Index + i + 1) * 0x9F6ABC1));
-                var dir = math.normalizesafe(random.NextFloat3() - new float3(0.5f, 0.5f, 0.5f));
-                var pos = Center + (dir * Radius);
-                var localToWorld = new LocalToWorld
-                {
-                    Value = float4x4.TRS(pos, quaternion.LookRotationSafe(dir, math.up()), new float3(1.0f, 1.0f, 1.0f))
-                };
-                LocalToWorldFromEntity[entity] = localToWorld;
-            }
+                Value = float4x4.TRS(pos, quaternion.LookRotationSafe(dir, math.up()), new float3(1.0f, 1.0f, 1.0f))
+            };
+            LocalToWorldFromEntity[entity] = localToWorld;
         }
-
-
     }
 }

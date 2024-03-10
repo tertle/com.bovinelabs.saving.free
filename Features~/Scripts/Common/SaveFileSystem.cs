@@ -9,11 +9,10 @@ namespace BovineLabs.Saving.Samples.Common
     using BovineLabs.Saving.Samples.Rollback;
     using Unity.Collections;
     using Unity.Entities;
-    using Unity.Scenes;
 
     public partial class SaveFileSystem : SystemBase
     {
-        private Dictionary<ComponentType, NativeArray<byte>> saveFiles = new Dictionary<ComponentType, NativeArray<byte>>();
+        private Dictionary<ComponentType, NativeArray<byte>> saveFiles = new();
         private EntityQuery saveDataQuery;
 
         public void Load(ComponentType componentType)

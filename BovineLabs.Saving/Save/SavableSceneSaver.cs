@@ -6,11 +6,11 @@ namespace BovineLabs.Saving
 {
     using BovineLabs.Core.Extensions;
     using Unity.Burst;
-    using Unity.Burst.Intrinsics;
     using Unity.Collections;
     using Unity.Collections.LowLevel.Unsafe;
     using Unity.Entities;
     using Unity.Jobs;
+    using Unity.Profiling;
     using UnityEngine;
 
     internal unsafe struct SavableSceneSaver : ISaver
@@ -18,24 +18,39 @@ namespace BovineLabs.Saving
         private readonly SystemState* system;
 
         private EntityTypeHandle entityTypeHandle;
-        private ComponentTypeHandle<SavableScene> saveableSceneHandle;
-        private ComponentTypeHandle<SavableScene> saveableSceneHandleRO;
+        private ComponentTypeHandle<SavableScene> savableSceneHandleRO;
         private BufferTypeHandle<SavableLinks> savableLinksHandleRO;
         private BufferLookup<SavableLinks> savableLinks;
 
-        private EntityQuery savableQuery;
+        private EntityQuery savableUnfilteredQuery;
+        private EntityQuery savableRecordQuery;
+        private EntityQuery commandBufferQuery;
 
         public SavableSceneSaver(SaveBuilder builder)
         {
             this.Key = TypeManager.GetTypeInfo<SavableScene>().StableTypeHash;
             this.system = builder.SystemPtr;
 
-            this.savableQuery = builder.GetQuery(ComponentType.ReadOnly<SavableScene>());
+            // This is used to match to the record for destroyed entity
+            // If we used filtered it would think that all ignored entities were destroyed
+            // and it's only used to build a hashset for matching, not actually saving
+            this.savableUnfilteredQuery = builder.GetQueryUnfiltered(stackalloc[] { ComponentType.ReadOnly<SavableScene>(), });
+
+            this.savableRecordQuery = builder.GetQueryUnfiltered(stackalloc[]
+            {
+                ComponentType.ReadOnly<SavableSceneRecord>(),
+                ComponentType.ReadOnly<SavableSceneRecordEntity>(),
+            });
+
             this.entityTypeHandle = builder.System.GetEntityTypeHandle();
-            this.saveableSceneHandle = builder.System.GetComponentTypeHandle<SavableScene>();
-            this.saveableSceneHandleRO = builder.System.GetComponentTypeHandle<SavableScene>(true);
+            this.savableSceneHandleRO = builder.System.GetComponentTypeHandle<SavableScene>(true);
             this.savableLinksHandleRO = builder.System.GetBufferTypeHandle<SavableLinks>(true);
             this.savableLinks = builder.System.GetBufferLookup<SavableLinks>();
+
+            this.commandBufferQuery = new EntityQueryBuilder(Allocator.Temp)
+                .WithAll<BeginSimulationEntityCommandBufferSystem.Singleton>()
+                .WithOptions(EntityQueryOptions.IncludeSystems)
+                .Build(ref builder.System);
         }
 
         /// <inheritdoc/>
@@ -47,17 +62,30 @@ namespace BovineLabs.Saving
         public (Serializer Serializer, JobHandle Dependency) Serialize(NativeList<ArchetypeChunk> chunks, JobHandle dependency)
         {
             this.entityTypeHandle.Update(ref this.System);
-            this.saveableSceneHandleRO.Update(ref this.System);
+            this.savableSceneHandleRO.Update(ref this.System);
             this.savableLinksHandleRO.Update(ref this.System);
+
+            var subSceneRecords = this.savableRecordQuery.TryGetSingletonBuffer<SavableSceneRecord>(out var subSceneBuffer, true)
+                ? subSceneBuffer.AsNativeArray()
+                : CollectionHelper.CreateNativeArray<SavableSceneRecord>(0, this.System.WorldUpdateAllocator);
+
+            var subSceneRecordEntitys = this.savableRecordQuery.TryGetSingletonBuffer<SavableSceneRecordEntity>(out var subSceneEntityBuffer, true)
+                ? subSceneEntityBuffer.AsNativeArray()
+                : CollectionHelper.CreateNativeArray<SavableSceneRecordEntity>(0, this.System.WorldUpdateAllocator);
 
             var serializer = new Serializer(0, this.System.WorldUpdateAllocator);
 
+            var unfilteredChunks = this.savableUnfilteredQuery.ToArchetypeChunkListAsync(this.System.WorldUpdateAllocator, dependency, out dependency);
+
             dependency = new SerializeJob
                 {
+                    SubSceneRecords = subSceneRecords,
+                    SubSceneRecordEntitys = subSceneRecordEntitys,
                     Chunks = chunks.AsDeferredJobArray(),
-                    Entity = this.entityTypeHandle,
-                    SavableSceneType = this.saveableSceneHandleRO,
-                    SavableLinksType = this.savableLinksHandleRO,
+                    ChunksUnfiltered = unfilteredChunks.AsDeferredJobArray(),
+                    EntityHandle = this.entityTypeHandle,
+                    SavableSceneHandle = this.savableSceneHandleRO,
+                    SavableLinksHandle = this.savableLinksHandleRO,
                     Serializer = serializer,
                     Key = this.Key,
                 }
@@ -70,37 +98,47 @@ namespace BovineLabs.Saving
         public JobHandle Deserialize(Deserializer deserializer, EntityMap entityMap, JobHandle dependency)
         {
             this.entityTypeHandle.Update(ref this.System);
-            this.saveableSceneHandle.Update(ref this.System);
             this.savableLinks.Update(ref this.System);
 
             var work = new NativeList<int>(16, this.System.WorldUpdateAllocator);
 
-            var savable = entityMap.EntitySavableMapping;
-            savable.Capacity = this.savableQuery.CalculateEntityCountWithoutFiltering(); // doesn't matter if we oversize, avoid sync of checking filtering
+            var commandBufferSystem = this.commandBufferQuery.GetSingleton<BeginSimulationEntityCommandBufferSystem.Singleton>();
+            var commandBuffer = commandBufferSystem.CreateCommandBuffer(this.System.WorldUnmanaged);
 
-            var dependency1 = new PopulateCurrentSceneEntities
-                {
-                    CurrentEntities = savable.AsParallelWriter(),
-                    EntityType = this.entityTypeHandle,
-                    SavableSceneHandle = this.saveableSceneHandle,
-                }
-                .ScheduleParallel(this.savableQuery, dependency);
+            var currentEntities = new NativeParallelHashMap<SavableSceneRecord, Entity>(0, this.System.WorldUpdateAllocator);
 
-            var dependency2 = new DeserializeSplitJob
+            if (!this.savableRecordQuery.IsEmptyIgnoreFilter)
+            {
+                var subSceneRecords = this.savableRecordQuery.GetSingletonBuffer<SavableSceneRecord>().AsNativeArray();
+                var subSceneRecordEntities = this.savableRecordQuery.GetSingletonBuffer<SavableSceneRecordEntity>().AsNativeArray();
+
+                dependency = new PopulateCurrentSceneEntities
+                    {
+                        CurrentEntities = currentEntities,
+                        SubSceneRecords = subSceneRecords,
+                        SubSceneRecordEntitys = subSceneRecordEntities,
+                    }
+                    .Schedule(dependency);
+            }
+
+            var entitySavableMapping = new NativeParallelHashMap<int, Entity>(0, this.System.WorldUpdateAllocator);
+
+            dependency = new DeserializeSplitJob
                 {
                     Deserializer = deserializer,
                     Work = work,
                     EntityMappingWriter = entityMap.EntityMapping,
                     EntityPartialMappingWriter = entityMap.EntityPartialMapping,
+                    CurrentEntities = currentEntities,
+                    CommandBuffer = commandBuffer,
+                    EntitySavableMapping = entitySavableMapping,
                 }
                 .Schedule(dependency);
-
-            dependency = JobHandle.CombineDependencies(dependency1, dependency2);
 
             dependency = new DeserializeJob
                 {
                     Deserializer = deserializer,
-                    CurrentEntities = entityMap.EntitySavableMapping,
+                    EntitySavableMapping = entitySavableMapping,
                     Work = work.AsDeferredJobArray(),
                     Links = this.savableLinks,
                     EntityMappingWriter = entityMap.EntityMapping.AsParallelWriter(),
@@ -115,16 +153,25 @@ namespace BovineLabs.Saving
         private struct SerializeJob : IJob
         {
             [ReadOnly]
+            public NativeArray<SavableSceneRecord> SubSceneRecords;
+
+            [ReadOnly]
+            public NativeArray<SavableSceneRecordEntity> SubSceneRecordEntitys;
+
+            [ReadOnly]
             public NativeArray<ArchetypeChunk> Chunks;
 
             [ReadOnly]
-            public EntityTypeHandle Entity;
+            public NativeArray<ArchetypeChunk> ChunksUnfiltered;
 
             [ReadOnly]
-            public ComponentTypeHandle<SavableScene> SavableSceneType;
+            public EntityTypeHandle EntityHandle;
 
             [ReadOnly]
-            public BufferTypeHandle<SavableLinks> SavableLinksType;
+            public ComponentTypeHandle<SavableScene> SavableSceneHandle;
+
+            [ReadOnly]
+            public BufferTypeHandle<SavableLinks> SavableLinksHandle;
 
             public Serializer Serializer;
 
@@ -132,28 +179,66 @@ namespace BovineLabs.Saving
 
             public void Execute()
             {
-                var saveIdx = this.Serializer.Allocate<HeaderSaver>();
-                var savableIdx = this.Serializer.Allocate<HeaderSavable>();
+                NativeParallelHashSet<Entity> existingRecords;
+                using (new ProfilerMarker("CreateExistingRecords").Auto())
+                {
+                    existingRecords = this.CreateExistingRecords();
+                }
 
-                var entityCount = 0;
-                var linkCount = 0;
+                using (new ProfilerMarker("EnsureCapacity").Auto())
+                {
+                    this.EnsureCapacity();
+                }
 
-                var capacity = 0;
+                using (new ProfilerMarker("Serialize").Auto())
+                {
+                    this.Serialize(existingRecords);
+                }
+            }
 
+            private NativeParallelHashSet<Entity> CreateExistingRecords()
+            {
+                var setSize = 0;
+                foreach (var chunk in this.ChunksUnfiltered)
+                {
+                    if (chunk.Has(ref this.SavableSceneHandle))
+                    {
+                        setSize += chunk.Count;
+                    }
+                }
+
+                var existingRecords = new NativeParallelHashSet<Entity>(setSize, Allocator.Temp);
+
+                foreach (var chunk in this.ChunksUnfiltered)
+                {
+                    if (chunk.Has(ref this.SavableSceneHandle))
+                    {
+                        var entities = chunk.GetEntityDataPtrRO(this.EntityHandle);
+                        existingRecords.AddBatchUnsafe(entities, chunk.Count);
+                    }
+                }
+
+                return existingRecords;
+            }
+
+            private void EnsureCapacity()
+            {
                 // Precompute total capacity to avoid a lot of allocations
+                var capacity = UnsafeUtility.SizeOf<HeaderSaver>() + UnsafeUtility.SizeOf<HeaderSavable>();
+                capacity += this.SubSceneRecords.Length * UnsafeUtility.SizeOf<Entity>(); // record entity
+                capacity += this.SubSceneRecords.Length * UnsafeUtility.SizeOf<SavableSceneRecord>() * 2; // record entity + destroy
+
                 foreach (var chunk in this.Chunks)
                 {
-                    if (!chunk.Has(ref this.SavableSceneType))
+                    if (!chunk.Has(ref this.SavableSceneHandle))
                     {
                         continue;
                     }
 
-                    var entities = chunk.GetNativeArray(this.Entity);
-                    var savableLinks = chunk.GetBufferAccessor(ref this.SavableLinksType);
+                    var savableLinks = chunk.GetBufferAccessor(ref this.SavableLinksHandle);
 
                     capacity += UnsafeUtility.SizeOf<HeaderChunk>();
-                    capacity += entities.Length * UnsafeUtility.SizeOf<SavableScene>();
-                    capacity += entities.Length * UnsafeUtility.SizeOf<Entity>();
+                    capacity += chunk.Count * UnsafeUtility.SizeOf<Entity>();
 
                     capacity += savableLinks.Length * UnsafeUtility.SizeOf<int>();
 
@@ -164,25 +249,51 @@ namespace BovineLabs.Saving
                 }
 
                 this.Serializer.EnsureExtraCapacity(capacity);
+            }
+
+            private void Serialize(NativeParallelHashSet<Entity> existingRecords)
+            {
+                var saveIdx = this.Serializer.AllocateNoResize<HeaderSaver>();
+                var savableIdx = this.Serializer.AllocateNoResize<HeaderSavable>();
+
+                ushort destroyed = 0;
+                var entityCount = 0;
+                var linkCount = 0;
+
+                var recordEntities = this.SubSceneRecordEntitys;
+                var records = this.SubSceneRecords;
+
+                this.Serializer.AddBufferNoResize(recordEntities);
+                this.Serializer.AddBufferNoResize(records);
+
+                for (var index = 0; index < records.Length; index++)
+                {
+                    if (existingRecords.Contains(recordEntities[index].Value))
+                    {
+                        // Still exists continue
+                        continue;
+                    }
+
+                    // Has been destroyed need to record this
+                    destroyed++;
+                    this.Serializer.AddNoResize(records[index]);
+                }
 
                 foreach (var chunk in this.Chunks)
                 {
-                    var savableScenes = chunk.GetNativeArray(ref this.SavableSceneType);
-
-                    if (savableScenes.Length == 0)
+                    if (!chunk.Has(ref this.SavableSceneHandle))
                     {
                         continue;
                     }
 
-                    var savableLinks = chunk.GetBufferAccessor(ref this.SavableLinksType);
-                    var entities = chunk.GetNativeArray(this.Entity);
+                    var savableLinks = chunk.GetBufferAccessor(ref this.SavableLinksHandle);
+                    var entities = chunk.GetEntityDataPtrRO(this.EntityHandle);
 
-                    entityCount += entities.Length;
+                    entityCount += chunk.Count;
 
                     var chunkIdx = this.Serializer.AllocateNoResize<HeaderChunk>();
                     var size = this.Serializer.Length;
-                    this.Serializer.AddBufferNoResize(entities);
-                    this.Serializer.AddBufferNoResize(savableScenes);
+                    this.Serializer.AddBufferNoResize(entities, chunk.Count);
 
                     for (var i = 0; i < savableLinks.Length; i++)
                     {
@@ -195,7 +306,7 @@ namespace BovineLabs.Saving
                     var headerChunk = this.Serializer.GetAllocation<HeaderChunk>(chunkIdx);
                     *headerChunk = new HeaderChunk
                     {
-                        EntityCount = savableScenes.Length,
+                        EntityCount = chunk.Count,
                         SavableLinks = savableLinks.Length > 0,
                         SizeInBytes = this.Serializer.Length - size,
                     };
@@ -211,6 +322,8 @@ namespace BovineLabs.Saving
                 var headerSavable = this.Serializer.GetAllocation<HeaderSavable>(savableIdx);
                 *headerSavable = new HeaderSavable
                 {
+                    RecordCount = (ushort)records.Length,
+                    RecordDestroyed = destroyed,
                     EntityCount = entityCount,
                     LinkCount = linkCount,
                 };
@@ -218,21 +331,19 @@ namespace BovineLabs.Saving
         }
 
         [BurstCompile]
-        private struct PopulateCurrentSceneEntities : IJobChunk
+        private struct PopulateCurrentSceneEntities : IJob
         {
-            public NativeParallelHashMap<SavableScene, Entity>.ParallelWriter CurrentEntities;
+            public NativeParallelHashMap<SavableSceneRecord, Entity> CurrentEntities;
 
             [ReadOnly]
-            public EntityTypeHandle EntityType;
+            public NativeArray<SavableSceneRecord> SubSceneRecords;
 
             [ReadOnly]
-            public ComponentTypeHandle<SavableScene> SavableSceneHandle;
+            public NativeArray<SavableSceneRecordEntity> SubSceneRecordEntitys;
 
-            public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            public void Execute()
             {
-                var entities = chunk.GetNativeArray(this.EntityType);
-                var savableScenes = chunk.GetNativeArray(ref this.SavableSceneHandle);
-                this.CurrentEntities.AddBatchUnsafe(savableScenes, entities);
+                this.CurrentEntities.AddBatchUnsafe(this.SubSceneRecords, this.SubSceneRecordEntitys.Reinterpret<Entity>());
             }
         }
 
@@ -247,6 +358,15 @@ namespace BovineLabs.Saving
 
             public NativeParallelHashMap<int, Entity> EntityPartialMappingWriter;
 
+            [ReadOnly]
+            public NativeParallelHashMap<SavableSceneRecord, Entity> CurrentEntities;
+
+            public NativeParallelHashMap<int, Entity> EntitySavableMapping;
+
+            public EntityCommandBuffer CommandBuffer;
+
+            public EntityQueryMask FilterMask;
+
             public void Execute()
             {
                 this.Deserializer.Offset<HeaderSaver>();
@@ -258,6 +378,32 @@ namespace BovineLabs.Saving
                 {
                     this.EntityMappingWriter.Capacity = newCapacity;
                     this.EntityPartialMappingWriter.Capacity = newCapacity;
+                }
+
+                var savedEntities = this.Deserializer.ReadBuffer<Entity>(header.RecordCount);
+                var record = this.Deserializer.ReadBuffer<SavableSceneRecord>(header.RecordCount);
+                this.EntitySavableMapping.Capacity = header.RecordCount;
+
+                // TODO we should do this in parallel probably otherwise will be pretty slow for a huge scene
+                // Remap old SavableScene to new SavableScene
+                for (ushort i = 0; i < header.RecordCount; i++)
+                {
+                    if (this.CurrentEntities.TryGetValue(record[i], out var entity))
+                    {
+                        this.EntitySavableMapping.Add(savedEntities[i].Index, entity);
+                    }
+                }
+
+                for (var i = 0; i < header.RecordDestroyed; i++)
+                {
+                    var destroyedEntity = this.Deserializer.Read<SavableSceneRecord>();
+
+                    if (!this.CurrentEntities.TryGetValue(destroyedEntity, out var entity))
+                    {
+                        continue;
+                    }
+
+                    this.CommandBuffer.DestroyEntity(entity);
                 }
 
                 var index = 0;
@@ -279,7 +425,7 @@ namespace BovineLabs.Saving
             public Deserializer Deserializer;
 
             [ReadOnly]
-            public NativeParallelHashMap<SavableScene, Entity> CurrentEntities;
+            public NativeParallelHashMap<int, Entity> EntitySavableMapping;
 
             [ReadOnly]
             public NativeArray<int> Work;
@@ -299,7 +445,6 @@ namespace BovineLabs.Saving
                 var headerChunk = this.Deserializer.Read<HeaderChunk>();
 
                 var entities = this.Deserializer.ReadBuffer<Entity>(headerChunk.EntityCount);
-                var savables = this.Deserializer.ReadBuffer<SavableScene>(headerChunk.EntityCount);
 
                 for (var entityIndex = 0; entityIndex < headerChunk.EntityCount; entityIndex++)
                 {
@@ -313,9 +458,9 @@ namespace BovineLabs.Saving
                         oldLinks = this.Deserializer.ReadBuffer<SavableLinks>(linksLength);
                     }
 
-                    if (!this.CurrentEntities.TryGetValue(savables[entityIndex], out var newEntity))
+                    if (!this.EntitySavableMapping.TryGetValue(entities[entityIndex].Index, out var newEntity))
                     {
-                        Debug.LogError($"Savable {savables[entityIndex]} saved but not found in current SubScene filter.");
+                        Debug.LogError($"Savable {entities[entityIndex].ToFixedString()} saved but not found in current SubScene filter.");
                         continue;
                     }
 
@@ -342,7 +487,7 @@ namespace BovineLabs.Saving
 
                         foreach (var newLink in linkArray)
                         {
-                            if (oldLink.Value != newLink.Value)
+                            if (oldLink.LinkID != newLink.LinkID)
                             {
                                 continue;
                             }
@@ -363,14 +508,17 @@ namespace BovineLabs.Saving
             public bool SavableLinks;
 
             // Reserved for future
-            public fixed byte Padding[4];
+            public fixed byte Padding[7];
         }
 
         private struct HeaderSavable
         {
+            public ushort RecordCount;
+            public ushort RecordDestroyed;
             public int EntityCount;
             public int LinkCount;
-            public fixed byte Padding[8];
+
+            public fixed byte Padding[4];
         }
     }
 }

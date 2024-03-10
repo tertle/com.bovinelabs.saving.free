@@ -4,6 +4,7 @@
 
 namespace BovineLabs.Saving.Samples.Rollback
 {
+    using BovineLabs.Saving.Samples.Saving;
     using Unity.Entities;
     using Unity.Transforms;
 

@@ -16,18 +16,18 @@ namespace BovineLabs.Saving.Samples.Saving
     public class TestComponentBufferAuthoring : MonoBehaviour
     {
         public int[] Value;
-    }
 
-    public class TestComponentBufferBaker : Baker<TestComponentBufferAuthoring>
-    {
-        public override void Bake(TestComponentBufferAuthoring authoring)
+        private class Baker : Baker<TestComponentBufferAuthoring>
         {
-            var buffer = this.AddBuffer<TestComponentBuffer>().Reinterpret<int>();
-            if (authoring.Value != null)
+            public override void Bake(TestComponentBufferAuthoring authoring)
             {
-                foreach (var v in authoring.Value)
+                var buffer = this.AddBuffer<TestComponentBuffer>(this.GetEntity(TransformUsageFlags.None)).Reinterpret<int>();
+                if (authoring.Value != null)
                 {
-                    buffer.Add(v);
+                    foreach (var v in authoring.Value)
+                    {
+                        buffer.Add(v);
+                    }
                 }
             }
         }

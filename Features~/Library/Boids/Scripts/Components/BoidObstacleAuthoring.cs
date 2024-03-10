@@ -3,21 +3,25 @@
 using Unity.Entities;
 using UnityEngine;
 
-namespace Samples.Boids
+
+namespace Boids
 {
-    public class BoidObstacleAuthoring : MonoBehaviour
+    public class BoidObstacleAuthoringBaker : Baker<BoidObstacleAuthoring>
     {
-        public class BoidObstacleAuthoringBaker : Baker<BoidObstacleAuthoring>
+        public override void Bake(BoidObstacleAuthoring authoring)
         {
-            public override void Bake(BoidObstacleAuthoring authoring)
-            {
-                AddComponent(new BoidObstacle());
-            }
+            var entity = GetEntity(TransformUsageFlags.Renderable);
+            AddComponent(entity, new BoidObstacle());
         }
     }
 
     public struct BoidObstacle : IComponentData
     {
     }
+
+    public class BoidObstacleAuthoring : MonoBehaviour
+    {
+    }
 }
+
 #endif

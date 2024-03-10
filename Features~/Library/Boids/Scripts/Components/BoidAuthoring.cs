@@ -5,7 +5,7 @@ using Unity.Entities;
 using Unity.Transforms;
 using UnityEngine;
 
-namespace Samples.Boids
+namespace Boids
 {
     public class BoidAuthoring : MonoBehaviour
     {
@@ -16,11 +16,12 @@ namespace Samples.Boids
         public float ObstacleAversionDistance = 30.0f;
         public float MoveSpeed = 25.0f;
 
-        public class BoidAuthoringBaker : Baker<BoidAuthoring>
+        class Baker : Baker<BoidAuthoring>
         {
             public override void Bake(BoidAuthoring authoring)
             {
-                AddSharedComponent(new Boid
+                var entity = GetEntity(TransformUsageFlags.Dynamic);
+                AddSharedComponent(entity, new Boid
                 {
                     CellRadius = authoring.CellRadius,
                     SeparationWeight = authoring.SeparationWeight,
@@ -45,4 +46,5 @@ namespace Samples.Boids
         public float MoveSpeed;
     }
 }
+
 #endif

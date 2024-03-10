@@ -1,9 +1,14 @@
+// <copyright file="SamplesUI.cs" company="BovineLabs">
+//     Copyright (c) BovineLabs. All rights reserved.
+// </copyright>
+
 namespace BovineLabs.Saving.Samples.Common
 {
     using System;
     using Unity.Collections;
     using Unity.Entities;
     using Unity.Mathematics;
+    using Unity.Rendering;
     using Unity.Scenes;
     using Unity.Transforms;
     using UnityEngine;
@@ -55,7 +60,7 @@ namespace BovineLabs.Saving.Samples.Common
             this.backButton.SetActive(false);
 
             // Generally entities should exist in sub scenes but if they don't they need to be destroyed when changing scene.
-            var savables = World.DefaultGameObjectInjectionWorld.EntityManager.CreateEntityQuery(typeof(SavablePrefab));
+            using var savables = World.DefaultGameObjectInjectionWorld.EntityManager.CreateEntityQuery(typeof(SavablePrefab));
             World.DefaultGameObjectInjectionWorld.EntityManager.DestroyEntity(savables);
         }
 
@@ -87,7 +92,7 @@ namespace BovineLabs.Saving.Samples.Common
         public void DestroyEntity()
         {
             var em = World.DefaultGameObjectInjectionWorld.EntityManager;
-            using var query = em.CreateEntityQuery(ComponentType.ReadOnly<Savable>());
+            using var query = em.CreateEntityQuery(ComponentType.ReadOnly<Savable>(), ComponentType.Exclude<SavablePrefabRecord>(), ComponentType.Exclude<SavableSceneRecord>());
 
             var entities = query.ToEntityArray(Allocator.Temp);
             if (entities.Length == 0)
@@ -97,6 +102,34 @@ namespace BovineLabs.Saving.Samples.Common
 
             var entity = entities[Random.Range(0, entities.Length)];
             em.DestroyEntity(entity);
+        }
+
+        public void AddComponent()
+        {
+            var em = World.DefaultGameObjectInjectionWorld.EntityManager;
+            using var query = em.CreateEntityQuery(ComponentType.ReadOnly<SavablePrefab>(), ComponentType.Exclude<URPMaterialPropertyBaseColor>());
+
+            if (query.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            var e = query.ToEntityArray(Allocator.Temp);
+            em.AddComponentData(e[UnityEngine.Random.Range(0, e.Length)], new URPMaterialPropertyBaseColor { Value = new float4(0.7f, 0.7f, 0, 1) });
+        }
+
+        public void RemoveComponent()
+        {
+            var em = World.DefaultGameObjectInjectionWorld.EntityManager;
+            using var query = em.CreateEntityQuery(ComponentType.ReadOnly<URPMaterialPropertyBaseColor>());
+
+            if (query.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            var e = query.ToEntityArray(Allocator.Temp);
+            em.RemoveComponent<URPMaterialPropertyBaseColor>(e[UnityEngine.Random.Range(0, e.Length)]);
         }
 
         private void Start()

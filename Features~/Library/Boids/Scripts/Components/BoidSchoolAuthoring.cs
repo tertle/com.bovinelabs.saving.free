@@ -3,28 +3,29 @@
 using Unity.Entities;
 using UnityEngine;
 
-namespace Samples.Boids
+namespace Boids
 {
     public class BoidSchoolAuthoring : MonoBehaviour
     {
         public GameObject Prefab;
         public float InitialRadius;
         public int Count;
-        
-        public class BoidSchoolAuthoringBaker : Baker<BoidSchoolAuthoring>
+
+        class Baker : Baker<BoidSchoolAuthoring>
         {
             public override void Bake(BoidSchoolAuthoring authoring)
             {
-                AddComponent( new BoidSchool
+                var entity = GetEntity(TransformUsageFlags.Renderable);
+                AddComponent(entity, new BoidSchool
                 {
-                    Prefab = GetEntity(authoring.Prefab),
+                    Prefab = GetEntity(authoring.Prefab, TransformUsageFlags.Dynamic),
                     Count = authoring.Count,
                     InitialRadius = authoring.InitialRadius
                 });
             }
         }
     }
-    
+
     public struct BoidSchool : IComponentData
     {
         public Entity Prefab;
@@ -32,5 +33,6 @@ namespace Samples.Boids
         public int Count;
     }
 }
+
 
 #endif

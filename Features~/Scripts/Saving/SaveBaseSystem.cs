@@ -2,9 +2,10 @@
 // Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
-namespace BovineLabs.Saving
+namespace BovineLabs.Saving.Samples.Saving
 {
     using BovineLabs.Core.Extensions;
+    using BovineLabs.Saving.Samples.Common;
     using Unity.Burst;
     using Unity.Collections;
     using Unity.Entities;

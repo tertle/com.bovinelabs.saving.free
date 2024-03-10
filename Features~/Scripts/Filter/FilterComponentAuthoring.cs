@@ -19,7 +19,7 @@ namespace BovineLabs.Saving.Samples.Filter
     {
         public override void Bake(FilterComponentAuthoring authoring)
         {
-            AddComponent<FilterComponent>();
+            this.AddComponent<FilterComponent>(this.GetEntity(TransformUsageFlags.None));
         }
     }
 }

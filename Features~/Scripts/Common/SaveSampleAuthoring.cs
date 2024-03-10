@@ -1,4 +1,8 @@
-﻿namespace BovineLabs.Saving.Samples.Common
+﻿// <copyright file="SaveSampleAuthoring.cs" company="BovineLabs">
+//     Copyright (c) BovineLabs. All rights reserved.
+// </copyright>
+
+namespace BovineLabs.Saving.Samples.Common
 {
     using Unity.Entities;
     using UnityEngine;
@@ -15,7 +19,7 @@
     {
         public override void Bake(SaveSampleAuthoring authoring)
         {
-            this.AddComponent<SaveSample>();
+            this.AddComponent<SaveSample>(this.GetEntity(TransformUsageFlags.None));
         }
     }
 }

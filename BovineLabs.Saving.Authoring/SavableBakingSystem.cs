@@ -14,67 +14,118 @@ namespace BovineLabs.Saving.Authoring
     [WorldSystemFilter(WorldSystemFilterFlags.BakingSystem)]
     public partial struct SavableBakingSystem : ISystem
     {
+        private struct RecordData
+        {
+            public NativeList<SavableSceneRecord> Records;
+            public NativeList<Entity> Entities;
+        }
+
         /// <inheritdoc/>
         [BurstCompile]
         public void OnUpdate(ref SystemState state)
         {
-            var records = new NativeParallelMultiHashMap<SceneSectionWrapper, SavableScene>(8, Allocator.Temp);
-            var ecb = new EntityCommandBuffer(Allocator.Temp);
+            // Destroy any existing records for live baking
+            var oldQuery = SystemAPI.QueryBuilder().WithAny<SavablePrefabRecord, SavableSceneRecord>().Build();
+            state.EntityManager.DestroyEntity(oldQuery);
 
-            var query = SystemAPI.QueryBuilder().WithAll<RootSavable>().WithOptions(EntityQueryOptions.IncludePrefab).Build();
-            var entities = query.ToEntityArray(Allocator.Temp);
-            var rootSavables = query.ToComponentDataArray<RootSavable>(Allocator.Temp);
-            for (var index = 0; index < rootSavables.Length; index++)
+            // TODO remove parallel
+            var prefabs = new NativeHashMap<SceneSectionWrapper, NativeList<SavablePrefabRecord>>(8, state.WorldUpdateAllocator);
+            var records = new NativeHashMap<SceneSectionWrapper, RecordData>(8, state.WorldUpdateAllocator);
+            var ecb = new EntityCommandBuffer(state.WorldUpdateAllocator);
+
+            foreach (var (savable, entity) in SystemAPI.Query<RootSavable>().WithOptions(EntityQueryOptions.IncludePrefab).WithEntityAccess())
             {
-                var entity = entities[index];
-                var savable = rootSavables[index];
-
-                // BUG: ArgumentException: Type BovineLabs.Saving.Authoring.SavableBakingSystem couldn't be found in the SystemRegistry.
-                // foreach (var (savable, entity) in SystemAPI.Query<RootSavable>().WithEntityQueryOptions(EntityQueryOptions.IncludePrefab).WithEntityAccess())
+                if (savable.IsPrefab)
                 {
-                    if (savable.IsPrefab)
+                    var assetGuid = savable.GlobalObjectId.assetGUID;
+                    var prefab = UnsafeUtility.As<GUID, SavablePrefabRecord>(ref assetGuid);
+
+                    // Odd case if entity just dropped in a non-subscene
+                    if (state.EntityManager.HasComponent<SceneSection>(entity))
                     {
-                        var assetGuid = savable.GlobalObjectId.assetGUID;
-                        var prefab = UnsafeUtility.As<GUID, SavablePrefab>(ref assetGuid);
-                        ecb.AddSharedComponent(entity, prefab);
+                        var sceneSection = state.EntityManager.GetSharedComponent<SceneSection>(entity);
+
+                        if (!prefabs.TryGetValue(sceneSection, out var prefabList))
+                        {
+                            prefabList = prefabs[sceneSection] = new NativeList<SavablePrefabRecord>(16, state.WorldUpdateAllocator);
+                        }
+
+                        ecb.AddComponent(entity, new SavablePrefab { Value = (ushort)prefabList.Length });
+                        prefabList.Add(prefab);
                     }
-                    else
+                }
+                else
+                {
+                    // Odd case if entity just dropped in a non-subscene
+                    if (state.EntityManager.HasComponent<SceneSection>(entity))
                     {
-                        var savableScene = new SavableScene
+                        var record = new SavableSceneRecord
                         {
                             TargetObjectId = savable.GlobalObjectId.targetObjectId,
                             TargetPrefabId = savable.GlobalObjectId.targetPrefabId,
                         };
 
-                        ecb.AddComponent(entity, savableScene);
-
-                        // Odd case if entity just dropped in a non-subscene
-                        if (state.EntityManager.HasComponent<SceneSection>(entity))
+                        var sceneSection = state.EntityManager.GetSharedComponent<SceneSection>(entity);
+                        if (!records.TryGetValue(sceneSection, out var recordList))
                         {
-                            var sceneSection = state.EntityManager.GetSharedComponent<SceneSection>(entity);
-                            records.Add(sceneSection, savableScene);
+                            recordList = records[sceneSection] = new RecordData
+                            {
+                                Records = new NativeList<SavableSceneRecord>(16, state.WorldUpdateAllocator),
+                                Entities = new NativeList<Entity>(16, state.WorldUpdateAllocator),
+                            };
                         }
+
+                        ecb.AddComponent<SavableScene>(entity);
+                        recordList.Records.Add(record);
+                        recordList.Entities.Add(entity);
                     }
                 }
             }
 
             ecb.Playback(state.EntityManager);
 
-            var (sections, length) = records.GetUniqueKeyArray(Allocator.Temp);
-            for (var index = 0; index < length; index++)
+            ReadOnlySpan<ComponentType> prefabRecordArchetype = stackalloc[]
             {
-                var sceneSection = (SceneSection)sections[index];
-                var recordEntity = state.EntityManager.CreateEntity();
-                state.EntityManager.AddSharedComponent(recordEntity, sceneSection);
-                state.EntityManager.AddComponent<Savable>(recordEntity);
+                ComponentType.ReadWrite<SceneSection>(),
+                ComponentType.ReadWrite<Savable>(),
+                ComponentType.ReadWrite<SavablePrefabRecord>(),
+            };
 
-                var recordBuffer = state.EntityManager.AddBuffer<SubSceneRecord>(recordEntity);
+            using var e = prefabs.GetEnumerator();
+            while (e.MoveNext())
+            {
+                var current = e.Current;
 
-                var values = records.GetValuesForKey(sceneSection);
-                while (values.MoveNext())
-                {
-                    recordBuffer.Add(new SubSceneRecord { Savable = values.Current });
-                }
+                var sceneSection = (SceneSection)current.Key;
+                var prefabEntity = state.EntityManager.CreateEntity(prefabRecordArchetype);
+                state.EntityManager.SetSharedComponent(prefabEntity, sceneSection);
+
+                var prefabsBuffer = state.EntityManager.GetBuffer<SavablePrefabRecord>(prefabEntity);
+                prefabsBuffer.AddRange(current.Value.AsArray());
+            }
+
+            ReadOnlySpan<ComponentType> sceneRecordArchetype = stackalloc[]
+            {
+                ComponentType.ReadWrite<SceneSection>(),
+                ComponentType.ReadWrite<SavableSceneRecord>(),
+                ComponentType.ReadWrite<SavableSceneRecordEntity>(),
+            };
+
+            // var (sections, length) = records.GetUniqueKeyArray(Allocator.Temp);
+            using var r = records.GetEnumerator();
+            while (r.MoveNext())
+            {
+                var current = r.Current;
+
+                var sceneSection = (SceneSection)current.Key;
+                var recordEntity = state.EntityManager.CreateEntity(sceneRecordArchetype);
+                state.EntityManager.SetSharedComponent(recordEntity, sceneSection);
+
+                var recordBuffer = state.EntityManager.GetBuffer<SavableSceneRecord>(recordEntity);
+                recordBuffer.AddRange(current.Value.Records.AsArray());
+
+                var recordEntityBuffer = state.EntityManager.GetBuffer<SavableSceneRecordEntity>(recordEntity).Reinterpret<Entity>();
+                recordEntityBuffer.AddRange(current.Value.Entities.AsArray());
             }
         }
 

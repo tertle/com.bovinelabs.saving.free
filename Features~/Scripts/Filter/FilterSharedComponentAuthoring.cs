@@ -24,7 +24,7 @@ namespace BovineLabs.Saving.Samples.Filter
     {
         public override void Bake(FilterSharedComponentAuthoring authoring)
         {
-            this.AddSharedComponent(new FilterSharedComponent { Value = authoring.Value });
+            this.AddSharedComponent(this.GetEntity(TransformUsageFlags.None), new FilterSharedComponent { Value = authoring.Value });
         }
     }
 }

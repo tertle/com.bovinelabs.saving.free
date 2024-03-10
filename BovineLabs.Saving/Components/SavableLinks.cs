@@ -10,6 +10,6 @@ namespace BovineLabs.Saving
     public struct SavableLinks : IBufferElementData
     {
         public Entity Entity;
-        public ulong Value;
+        public ulong LinkID;
     }
 }

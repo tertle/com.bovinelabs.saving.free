@@ -5,6 +5,7 @@
 namespace BovineLabs.Saving.Samples.Rollback
 {
     using System.Collections.Generic;
+    using BovineLabs.Saving.Samples.Common;
     using Unity.Collections;
     using Unity.Entities;
 
@@ -128,18 +129,10 @@ namespace BovineLabs.Saving.Samples.Rollback
             for (var i = this.saveData.Count - 1; i > this.index; i--)
             {
                 this.saveData[i].Dispose();
-                this.saveData.RemoveAt(i);
+                this.saveData.RemoveAtSwapBack(i);
             }
 
             this.saveData.Add(buffer.Reinterpret<byte>().ToNativeArray(Allocator.Persistent));
-
-            // Save user memory, limit rollback to 1000 frames
-            if (this.saveData.Count > 1000)
-            {
-                this.saveData[0].Dispose();
-                this.saveData.RemoveAt(0);
-            }
-
             this.index = this.saveData.Count - 1;
 
             this.EntityManager.DestroyEntity(entity);

@@ -2,24 +2,21 @@
 
 using Unity.Collections;
 using Unity.Entities;
-using Unity.Mathematics;
-using Unity.Transforms;
 using UnityEditor;
 using UnityEngine;
 
-// Demonstrate taking some data available in editor about GameObjects and save in
-// a runtime format suitable for Component system updates.
-// - Playback first attached animation clip (only expect one)
-// - Record positions and rotations at specified rate
-// - Store samples into DynamicBuffer
-
-namespace Samples.Boids
+namespace Boids
 {
+    // Demonstrate taking some data available in editor about GameObjects and save in
+    // a runtime format suitable for Component system updates.
+    // - Playback first attached animation clip (only expect one)
+    // - Record positions and rotations at specified rate
+    // - Store samples into DynamicBuffer
     public class TransformRecorderAuthoring : MonoBehaviour
     {
         [Range(2, 120)] public int SamplesPerSecond = 60;
 
-        public class TransformRecorderAuthoringBaker : Baker<TransformRecorderAuthoring>
+        class Baker : Baker<TransformRecorderAuthoring>
         {
             public override void Bake(TransformRecorderAuthoring authoring)
             {
@@ -50,7 +47,8 @@ namespace Samples.Boids
                     s += sampleRate;
                 }
 
-                AddComponent(new SampledAnimationClip
+                var entity = GetEntity(TransformUsageFlags.Dynamic);
+                AddComponent(entity, new SampledAnimationClip
                 {
                     FrameCount = frameCount,
                     SampleRate = sampleRate,
@@ -64,27 +62,6 @@ namespace Samples.Boids
             }
         }
     }
-    
-    public struct SampledAnimationClip : IComponentData
-    {
-        public float SampleRate;
-        public int FrameCount;
-
-        // Playback State
-        public float CurrentTime;
-        public int FrameIndex;
-        public float TimeOffset;
-
-        public BlobAssetReference<TransformSamples> TransformSamplesBlob;
-    }
-    
-    [WriteGroup(typeof(LocalTransform))]
-    public struct TransformSamples
-    {
-        public BlobArray<float3> TranslationSamples;
-        public BlobArray<quaternion> RotationSamples;
-    }
 }
-
 
 #endif

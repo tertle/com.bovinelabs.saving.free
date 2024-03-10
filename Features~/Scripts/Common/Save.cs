@@ -1,8 +1,8 @@
 ﻿// <copyright file="Save.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
-namespace BovineLabs.Saving
+namespace BovineLabs.Saving.Samples.Common
 {
     using Unity.Entities;
 

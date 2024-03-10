@@ -6,6 +6,8 @@ namespace BovineLabs.Saving
 {
     using System;
     using BovineLabs.Core.Assertions;
+    using BovineLabs.Core.Extensions;
+    using BovineLabs.Core.Jobs;
     using Unity.Assertions;
     using Unity.Burst;
     using Unity.Burst.CompilerServices;
@@ -20,16 +22,18 @@ namespace BovineLabs.Saving
     /// <summary> Saves <see cref="IComponentData"/>. </summary>
     public unsafe struct ComponentDataSave : ISaver, IDisposable
     {
-        private ComponentSave componentSave;
+        private readonly SystemState* system;
 
+        private ComponentSave componentSave;
         private EntityTypeHandle entityHandle;
         private DynamicComponentTypeHandle dynamicHandle;
         private DynamicComponentTypeHandle dynamicHandleRW;
 
-        public ComponentDataSave(SaveBuilder builder, ulong stableTypeHash)
+        public ComponentDataSave(SaveBuilder builder, ComponentSaveState state)
         {
-            this.Key = stableTypeHash;
-            this.componentSave = new ComponentSave(builder, stableTypeHash);
+            this.Key = state.StableTypeHash;
+            this.system = builder.SystemPtr;
+            this.componentSave = new ComponentSave(builder, state);
 
             Assert.IsTrue(this.componentSave.TypeInfo.Category == TypeManager.TypeCategory.ComponentData);
             Assert.IsTrue(
@@ -42,6 +46,8 @@ namespace BovineLabs.Saving
         }
 
         public ulong Key { get; }
+
+        private ref SystemState System => ref *this.system;
 
         public void Dispose()
         {
@@ -77,7 +83,7 @@ namespace BovineLabs.Saving
             this.entityHandle.Update(ref this.componentSave.System);
             this.dynamicHandleRW.Update(ref this.componentSave.System);
 
-            var deserializedData = new NativeParallelHashMap<Entity, DeserializedEntityData>(128, this.componentSave.System.WorldUpdateAllocator);
+            var deserializedData = new NativeHashMap<Entity, DeserializedEntityData>(128, this.componentSave.System.WorldUpdateAllocator);
             var setEnableable = new NativeReference<bool>(this.componentSave.TypeIndex.IsEnableable, this.componentSave.System.WorldUpdateAllocator);
 
             dependency = new DeserializeJob
@@ -90,18 +96,39 @@ namespace BovineLabs.Saving
                 }
                 .Schedule(dependency);
 
-            dependency = new ApplyJob
+            if (this.componentSave.Feature == SaveFeature.None)
+            {
+                dependency = new ApplyJob
+                    {
+                        DeserializedData = deserializedData,
+                        SetEnableable = setEnableable,
+                        EntityType = this.entityHandle,
+                        ComponentType = this.dynamicHandleRW,
+                        SaveChunks = this.componentSave.SaveChunks,
+                        ElementSize = this.componentSave.TypeInfo.ElementSize,
+                        EntityOffsets = this.componentSave.EntityOffsets,
+                        Remap = entityMap,
+                    }
+                    .ScheduleParallel(this.componentSave.QueryWrite, dependency);
+            }
+            else
+            {
+                if ((this.componentSave.Feature & SaveFeature.AddComponent) != 0)
                 {
-                    DeserializedData = deserializedData,
-                    SetEnableable = setEnableable,
-                    EntityType = this.entityHandle,
-                    ComponentType = this.dynamicHandleRW,
-                    SaveChunks = this.componentSave.SaveChunks,
-                    ElementSize = this.componentSave.TypeInfo.ElementSize,
-                    EntityOffsets = this.componentSave.EntityOffsets,
-                    Remap = entityMap,
+                    dependency = new ApplyAddJob
+                        {
+                            SetEnableable = setEnableable,
+                            DeserializedData = deserializedData,
+                            ComponentType = ComponentType.FromTypeIndex(this.componentSave.TypeIndex),
+                            SaveChunks = this.componentSave.SaveChunks,
+                            ElementSize = this.componentSave.TypeInfo.ElementSize,
+                            EntityOffsets = this.componentSave.EntityOffsets,
+                            Remap = entityMap,
+                            CommandBuffer = this.componentSave.CreateCommandBuffer().AsParallelWriter(),
+                        }
+                        .ScheduleParallel(deserializedData, 64, dependency);
                 }
-                .ScheduleParallel(this.componentSave.QueryWrite, dependency);
+            }
 
             return dependency;
         }
@@ -143,6 +170,9 @@ namespace BovineLabs.Saving
             private bool EnsureCapacity()
             {
                 var capacity = 0;
+
+                capacity += UnsafeUtility.SizeOf<HeaderSaver>() + UnsafeUtility.SizeOf<ComponentSave.HeaderComponent>();
+
                 foreach (var chunk in this.Chunks)
                 {
                     if (!chunk.Has(ref this.ComponentType))
@@ -163,8 +193,6 @@ namespace BovineLabs.Saving
                 {
                     return false;
                 }
-
-                capacity += UnsafeUtility.SizeOf<HeaderSaver>() + UnsafeUtility.SizeOf<ComponentSave.HeaderComponent>();
 
                 this.Serializer.EnsureExtraCapacity(capacity);
                 return true;
@@ -231,7 +259,7 @@ namespace BovineLabs.Saving
             [ReadOnly]
             public EntityMap Remap;
 
-            public NativeParallelHashMap<Entity, DeserializedEntityData> DeserializedData;
+            public NativeHashMap<Entity, DeserializedEntityData> DeserializedData;
 
             public NativeReference<bool> SetEnableable;
 
@@ -287,15 +315,15 @@ namespace BovineLabs.Saving
         private struct ApplyJob : IJobChunk
         {
             [ReadOnly]
-            public NativeParallelHashMap<Entity, DeserializedEntityData> DeserializedData;
-
-            [ReadOnly]
-            public NativeReference<bool> SetEnableable;
-
-            [ReadOnly]
             public EntityTypeHandle EntityType;
 
             public DynamicComponentTypeHandle ComponentType;
+
+            [ReadOnly]
+            public NativeHashMap<Entity, DeserializedEntityData> DeserializedData;
+
+            [ReadOnly]
+            public NativeReference<bool> SetEnableable;
 
             [ReadOnly]
             public NativeArray<ComponentSave.SaveChunk> SaveChunks;
@@ -310,15 +338,17 @@ namespace BovineLabs.Saving
 
             public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
             {
-                var components = chunk.GetDynamicComponentDataArrayReinterpret<byte>(ref this.ComponentType, this.ElementSize);
-                if (components.Length == 0)
+                if (!chunk.Has(ref this.ComponentType))
                 {
                     return;
                 }
 
-                var entities = chunk.GetNativeArray(this.EntityType);
+                var components = this.ElementSize > 0 ? chunk.GetDynamicComponentDataArrayReinterpret<byte>(ref this.ComponentType, this.ElementSize) : default;
+                var entities = chunk.GetEntityDataPtrRO(this.EntityType);
 
-                for (var i = 0; i < entities.Length; i++)
+                var setEnableable = this.SetEnableable.Value;
+
+                for (var i = 0; i < chunk.Count; i++)
                 {
                     var entity = entities[i];
 
@@ -343,10 +373,63 @@ namespace BovineLabs.Saving
                         }
                     }
 
-                    if (Hint.Unlikely(this.SetEnableable.Value))
+                    if (Hint.Unlikely(setEnableable))
                     {
                         chunk.SetComponentEnabled(ref this.ComponentType, i, entityData.IsEnabled);
                     }
+                }
+            }
+        }
+
+        [BurstCompile]
+        private struct ApplyAddJob : IJobHashMapDefer
+        {
+            public ComponentType ComponentType;
+
+            [ReadOnly]
+            public NativeHashMap<Entity, DeserializedEntityData> DeserializedData;
+
+            [ReadOnly]
+            public NativeReference<bool> SetEnableable;
+
+            [ReadOnly]
+            public NativeArray<ComponentSave.SaveChunk> SaveChunks;
+
+            public int ElementSize;
+
+            [ReadOnly]
+            public NativeArray<int> EntityOffsets;
+
+            [ReadOnly]
+            public EntityMap Remap;
+
+            public EntityCommandBuffer.ParallelWriter CommandBuffer;
+
+            public void ExecuteNext(int entryIndex, int jobIndex)
+            {
+                this.Read(this.DeserializedData, entryIndex, out var entity, out var entityData);
+
+                if (this.ElementSize > 0)
+                {
+                    var dst = stackalloc byte[this.ElementSize];
+                    var src = entityData.Source;
+
+                    foreach (var element in this.SaveChunks)
+                    {
+                        UnsafeUtility.MemCpy(dst + element.Index, src + element.Index, element.Length);
+                    }
+
+                    foreach (var offset in this.EntityOffsets)
+                    {
+                        ComponentSave.RemapEntityField(dst, offset, this.Remap);
+                    }
+
+                    this.CommandBuffer.UnsafeAddComponent(jobIndex, entity, this.ComponentType.TypeIndex, this.ElementSize, dst);
+                }
+
+                if (Hint.Unlikely(this.SetEnableable.Value))
+                {
+                    this.CommandBuffer.SetComponentEnabled(jobIndex, entity, this.ComponentType, entityData.IsEnabled);
                 }
             }
         }

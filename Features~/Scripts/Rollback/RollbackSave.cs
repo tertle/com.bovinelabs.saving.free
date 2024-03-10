@@ -4,6 +4,7 @@
 
 namespace BovineLabs.Saving.Samples.Rollback
 {
+    using BovineLabs.Saving.Samples.Common;
     using Unity.Entities;
 
     [WriteGroup(typeof(Load))]

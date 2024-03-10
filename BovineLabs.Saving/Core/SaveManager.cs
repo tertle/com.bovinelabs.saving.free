@@ -296,7 +296,7 @@ namespace BovineLabs.Saving
 
         private JobHandle WriteSaveData(ref NativeList<byte> saveData, JobHandle dependency)
         {
-            var keyIndexMap = new NativeParallelHashMap<SectionIdentifier, int>(
+            var keyIndexMap = new NativeHashMap<SectionIdentifier, int>(
                 this.subSceneSavedData.Count + 1, this.SystemState.WorldUpdateAllocator);
             var startIndex = new NativeReference<int>(this.SystemState.WorldUpdateAllocator);
 
@@ -393,9 +393,10 @@ namespace BovineLabs.Saving
 
             public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
             {
-                var entities = chunk.GetNativeArray(this.EntityHandle);
-                foreach (var entity in entities)
+                var entities = chunk.GetEntityDataPtrRO(this.EntityHandle);
+                for (var index = 0; index < chunk.Count; index++)
                 {
+                    var entity = entities[index];
                     if (!this.SubSceneUtility.IsSceneLoaded(entity))
                     {
                         return;
@@ -409,7 +410,7 @@ namespace BovineLabs.Saving
         [BurstCompile]
         private struct CalculateKeyIndexMapJob : IJob
         {
-            public NativeParallelHashMap<SectionIdentifier, int> KeyIndexMap;
+            public NativeHashMap<SectionIdentifier, int> KeyIndexMap;
             public NativeReference<int> StartIndex;
 
             [ReadOnly]
@@ -449,14 +450,14 @@ namespace BovineLabs.Saving
             public NativeList<byte> Input;
 
             [ReadOnly]
-            public NativeParallelHashMap<SectionIdentifier, int> KeyIndexMap;
+            public NativeHashMap<SectionIdentifier, int> KeyIndexMap;
 
             public SectionIdentifier Key;
 
             public void Execute()
             {
                 var index = this.KeyIndexMap[this.Key];
-                var start = (byte*)this.SaveData.GetUnsafePtr() + index;
+                var start = this.SaveData.GetUnsafePtr() + index;
 
                 var header = new Header { Key = this.Key, LengthInBytes = this.Input.Length };
                 UnsafeUtility.MemCpy(start, &header, UnsafeUtility.SizeOf<Header>());
