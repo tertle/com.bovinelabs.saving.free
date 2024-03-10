@@ -1,5 +1,5 @@
 {
-  "name": "com.bovinelabs.saving.free",
+  "name": "com.bovinelabs.saving",
   "description": "Savanna is a saving library for building games with DOTS.",
   "version": "0.6.0",
   "unity": "2022.3",
