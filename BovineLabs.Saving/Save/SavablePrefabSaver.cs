@@ -288,7 +288,7 @@ namespace BovineLabs.Saving
 
                     var guid = this.SavablePrefabGUIDs[savablePrefab.Value];
 
-                    if (!this.Lookup.TryAdd(guid, entities[0]))
+                    if (!this.Lookup.TryAdd(guid, entities[i]))
                     {
                         Debug.LogError(
                             $"More than one prefab of savable index {guid.Value0},{guid.Value1},{guid.Value2},{guid.Value3}, found in world, using first");
@@ -329,7 +329,7 @@ namespace BovineLabs.Saving
             {
                 var capacity = 0;
                 capacity += UnsafeUtility.SizeOf<HeaderSaver>() + UnsafeUtility.SizeOf<HeaderSavable>();
-                capacity += this.SavablePrefabs.Length + UnsafeUtility.SizeOf<SavablePrefabRecord>();
+                capacity += this.SavablePrefabs.Length * UnsafeUtility.SizeOf<SavablePrefabRecord>();
 
                 foreach (var chunk in this.Chunks)
                 {
@@ -338,7 +338,7 @@ namespace BovineLabs.Saving
                         continue;
                     }
 
-                    capacity += chunk.Count * UnsafeUtility.SizeOf<Entity>() * UnsafeUtility.SizeOf<SavablePrefab>();
+                    capacity += chunk.Count * (UnsafeUtility.SizeOf<Entity>() + UnsafeUtility.SizeOf<SavablePrefab>());
                     var savableLinks = chunk.GetBufferAccessor(ref this.SavableLinksHandle);
 
                     for (var i = 0; i < savableLinks.Length; i++)
