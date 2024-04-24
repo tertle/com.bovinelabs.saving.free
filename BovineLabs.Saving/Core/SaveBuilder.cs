@@ -91,7 +91,7 @@ namespace BovineLabs.Saving
         {
             var desc = this.CreateDescription(extraAllTypes);
             var query = desc.Build(ref this.System);
-            this.entityQueries.Add(query);
+            this.AddQuery(query);
             return query;
         }
 
@@ -101,6 +101,11 @@ namespace BovineLabs.Saving
         public EntityQuery GetQuery(ComponentType extraAllType)
         {
             return this.GetQuery(new ReadOnlySpan<ComponentType>(&extraAllType, 1));
+        }
+        
+        public void AddQuery(EntityQuery query)
+        {
+            this.entityQueries.Add(query);
         }
 
         /// <summary> Add new components to the All field in the EntityQueryDesc. </summary>

@@ -49,16 +49,18 @@ namespace BovineLabs.Saving
             this.prefabQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<SavablePrefab, Prefab>()
                 .WithOptions(EntityQueryOptions.IncludePrefab)
-                .Build(builder.System.EntityManager);
+                .Build(ref builder.System);
+                
+            builder.AddQuery(this.prefabQuery);
 
             this.instantiateQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<SavablePrefab, ToInitialize>()
-                .Build(builder.System.EntityManager);
+                .Build(ref builder.System);
 
             this.initializedQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<ToInitialize>()
                 .WithOptions(EntityQueryOptions.IncludePrefab)
-                .Build(builder.System.EntityManager);
+                .Build(ref builder.System);
         }
 
         /// <inheritdoc/>
