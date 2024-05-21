@@ -7,6 +7,7 @@ namespace BovineLabs.Saving
     using BovineLabs.Core.Assertions;
     using BovineLabs.Core.Extensions;
     using BovineLabs.Core.Jobs;
+    using BovineLabs.Core.Utility;
     using Unity.Burst;
     using Unity.Burst.Intrinsics;
     using Unity.Collections;
@@ -50,8 +51,6 @@ namespace BovineLabs.Saving
                 .WithAll<SavablePrefab, Prefab>()
                 .WithOptions(EntityQueryOptions.IncludePrefab)
                 .Build(ref builder.System);
-                
-            builder.AddQuery(this.prefabQuery);
 
             this.instantiateQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<SavablePrefab, ToInitialize>()

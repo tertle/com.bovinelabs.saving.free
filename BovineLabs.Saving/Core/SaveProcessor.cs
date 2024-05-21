@@ -130,7 +130,7 @@ namespace BovineLabs.Saving
                 return;
             }
 
-            foreach (var query in this.builder.EntityQueries)
+            foreach (EntityQuery query in this.builder.EntityQueries)
             {
                 // We have a saved sub scene filter, ensure we add it back
                 if (this.subSceneFilter.SceneGUID != default)

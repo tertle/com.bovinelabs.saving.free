@@ -102,7 +102,7 @@ namespace BovineLabs.Saving
         {
             return this.GetQuery(new ReadOnlySpan<ComponentType>(&extraAllType, 1));
         }
-        
+
         public void AddQuery(EntityQuery query)
         {
             this.entityQueries.Add(query);
@@ -329,7 +329,7 @@ namespace BovineLabs.Saving
 
         /// <summary> Create a query from the current configuration. </summary>
         /// <param name="extraAllTypes"> Optional extra All types that can be included in the query. </param>
-        /// <returns> A entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
+        /// <returns> An entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
         internal EntityQuery GetQueryUnfiltered(ReadOnlySpan<ComponentType> extraAllTypes = default)
         {
             var desc = this.CreateUnfilteredDescription(extraAllTypes);
