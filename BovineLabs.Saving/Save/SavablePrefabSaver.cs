@@ -339,7 +339,7 @@ namespace BovineLabs.Saving
                         continue;
                     }
 
-                    capacity += chunk.Count * UnsafeUtility.SizeOf<Entity>() * UnsafeUtility.SizeOf<SavablePrefab>();
+                    capacity += chunk.Count * (UnsafeUtility.SizeOf<Entity>() + UnsafeUtility.SizeOf<SavablePrefab>());
                     var savableLinks = chunk.GetBufferAccessor(ref this.SavableLinksHandle);
 
                     for (var i = 0; i < savableLinks.Length; i++)
