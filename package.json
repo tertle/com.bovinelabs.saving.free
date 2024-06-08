@@ -2,11 +2,17 @@
   "name": "com.bovinelabs.saving",
   "description": "Savanna is a saving library for building games with DOTS.",
   "version": "0.6.0",
-  "unity": "2022.3",
+  "unity": "6000.0",
   "displayName": "BovineLabs Saving",
   "dependencies": {
-    "com.unity.entities": "1.2.0-pre.12",
-    "com.bovinelabs.core": "1.2.10"
+    "com.unity.entities": "1.2.0",
+    "com.bovinelabs.core": "1.2.14"
+  },
+  "keywords": [
+    "DOTS", "Entities", "ECS"
+  ],
+  "author": {
+    "name": "BovineLabs"
   },
   "samples": [
     {
@@ -14,6 +20,5 @@
       "description": "A collection of samples showcasing the features of the saving library.",
       "path": "Features~"
     }
-  ],
-  "type": "library"
+  ]
 }

@@ -4,6 +4,7 @@
 
 namespace BovineLabs.Saving
 {
+    using BovineLabs.Core.Utility;
     using Unity.Collections;
     using Unity.Entities;
     using Unity.Jobs;

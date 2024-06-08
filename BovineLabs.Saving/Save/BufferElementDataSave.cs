@@ -7,6 +7,7 @@ namespace BovineLabs.Saving
     using System;
     using BovineLabs.Core.Extensions;
     using BovineLabs.Core.Jobs;
+    using BovineLabs.Core.Utility;
     using Unity.Assertions;
     using Unity.Burst;
     using Unity.Burst.CompilerServices;

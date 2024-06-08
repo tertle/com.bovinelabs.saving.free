@@ -5,6 +5,7 @@
 namespace BovineLabs.Saving
 {
     using BovineLabs.Core.Extensions;
+    using BovineLabs.Core.Utility;
     using Unity.Burst;
     using Unity.Collections;
     using Unity.Collections.LowLevel.Unsafe;
