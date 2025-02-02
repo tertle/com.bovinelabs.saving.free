@@ -1,13 +1,15 @@
 ﻿// <copyright file="SavablePrefabSaver.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving
 {
+    using System;
     using BovineLabs.Core.Assertions;
     using BovineLabs.Core.Extensions;
     using BovineLabs.Core.Jobs;
     using BovineLabs.Core.Utility;
+    using BovineLabs.Saving.Data;
     using Unity.Burst;
     using Unity.Burst.Intrinsics;
     using Unity.Collections;
@@ -20,7 +22,6 @@ namespace BovineLabs.Saving
     internal unsafe struct SavablePrefabSaver : ISaver
     {
         private readonly bool usePrefabInstances;
-        private readonly SystemState* system;
 
         private readonly EntityQuery prefabQuery;
         private readonly EntityQuery instantiateQuery;
@@ -33,52 +34,47 @@ namespace BovineLabs.Saving
         private ComponentTypeHandle<SavablePrefab> savablePrefabHandle;
         private BufferLookup<SavableLinks> saveableLinks;
 
-        public SavablePrefabSaver(SaveBuilder builder)
+        public SavablePrefabSaver(ref SystemState state, SaveBuilder builder)
         {
             this.Key = TypeManager.GetTypeInfo<SavablePrefab>().StableTypeHash;
-            this.system = builder.SystemPtr;
             this.usePrefabInstances = builder.UseExistingInstances;
 
-            this.entityHandle = builder.System.GetEntityTypeHandle();
-            this.saveableLinksHandle = builder.System.GetBufferTypeHandle<SavableLinks>(true);
-            this.savablePrefabHandle = builder.System.GetComponentTypeHandle<SavablePrefab>(true);
-            this.saveableLinks = builder.System.GetBufferLookup<SavableLinks>(true);
+            this.entityHandle = state.GetEntityTypeHandle();
+            this.saveableLinksHandle = state.GetBufferTypeHandle<SavableLinks>(true);
+            this.savablePrefabHandle = state.GetComponentTypeHandle<SavablePrefab>(true);
+            this.saveableLinks = state.GetBufferLookup<SavableLinks>(true);
 
-            this.savablePrefabQuery = builder.GetQuery(ComponentType.ReadOnly<SavablePrefab>());
-            this.savablePrefabGUIDQuery = builder.GetQuery(ComponentType.ReadOnly<SavablePrefabRecord>());
+            this.savablePrefabQuery = builder.GetQuery(ref state, ComponentType.ReadOnly<SavablePrefab>());
+            this.savablePrefabGUIDQuery = builder.GetQuery(ref state, ComponentType.ReadOnly<SavablePrefabRecord>());
 
-            this.prefabQuery = new EntityQueryBuilder(Allocator.Temp)
-                .WithAll<SavablePrefab, Prefab>()
-                .WithOptions(EntityQueryOptions.IncludePrefab)
-                .Build(ref builder.System);
+            var components = stackalloc[] { ComponentType.ReadOnly<SavablePrefab>(), ComponentType.ReadOnly<Prefab>() };
+            this.prefabQuery = builder.GetPrefabQuery(ref state, new ReadOnlySpan<ComponentType>(components, 2));
 
             this.instantiateQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<SavablePrefab, ToInitialize>()
-                .Build(ref builder.System);
+                .Build(ref state);
 
             this.initializedQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<ToInitialize>()
                 .WithOptions(EntityQueryOptions.IncludePrefab)
-                .Build(ref builder.System);
+                .Build(ref state);
         }
 
         /// <inheritdoc/>
         public ulong Key { get; }
 
-        private ref SystemState System => ref *this.system;
-
         /// <inheritdoc/>
-        public (Serializer Serializer, JobHandle Dependency) Serialize(NativeList<ArchetypeChunk> chunks, JobHandle dependency)
+        public (Serializer Serializer, JobHandle Dependency) Serialize(ref SystemState state, NativeList<ArchetypeChunk> chunks, JobHandle dependency)
         {
-            this.entityHandle.Update(ref this.System);
-            this.savablePrefabHandle.Update(ref this.System);
-            this.saveableLinksHandle.Update(ref this.System);
+            this.entityHandle.Update(ref state);
+            this.savablePrefabHandle.Update(ref state);
+            this.saveableLinksHandle.Update(ref state);
 
             var savablePrefabs = this.savablePrefabGUIDQuery.TryGetSingletonBuffer<SavablePrefabRecord>(out var subSceneBuffer, true)
                 ? subSceneBuffer.AsNativeArray()
-                : CollectionHelper.CreateNativeArray<SavablePrefabRecord>(0, this.System.WorldUpdateAllocator);
+                : CollectionHelper.CreateNativeArray<SavablePrefabRecord>(0, state.WorldUpdateAllocator);
 
-            var serializer = new Serializer(1024, this.System.WorldUpdateAllocator);
+            var serializer = new Serializer(1024, state.WorldUpdateAllocator);
 
             dependency = new SerializeJob
                 {
@@ -96,20 +92,20 @@ namespace BovineLabs.Saving
         }
 
         /// <inheritdoc/>
-        public JobHandle Deserialize(Deserializer deserializer, EntityMap entityMap, JobHandle dependency)
+        public JobHandle Deserialize(ref SystemState state, Deserializer deserializer, EntityMap entityMap, JobHandle dependency)
         {
             // We need to instantiate entities and doing other operations so just get ready
             dependency.Complete();
 
-            var savedLinks = new NativeHashMap<Entity, UnsafeList<SavableLinks>>(0, this.System.WorldUpdateAllocator);
-            var prefabLists = new NativeHashMap<SavablePrefabRecord, UnsafeList<Entity>>(0, this.System.WorldUpdateAllocator);
-            var serializedPrefabs = new NativeReference<SerializedPrefabs>(this.system->WorldUpdateAllocator);
+            var savedLinks = new NativeHashMap<Entity, UnsafeList<SavableLinks>>(0, state.WorldUpdateAllocator);
+            var prefabLists = new NativeHashMap<SavablePrefabRecord, UnsafeList<Entity>>(0, state.WorldUpdateAllocator);
+            var serializedPrefabs = new NativeReference<SerializedPrefabs>(state.WorldUpdateAllocator);
 
-            var oldEntities = new NativeList<Entity>(0, this.System.WorldUpdateAllocator);
-            var newEntities = new NativeList<Entity>(0, this.System.WorldUpdateAllocator);
+            var oldEntities = new NativeList<Entity>(0, state.WorldUpdateAllocator);
+            var newEntities = new NativeList<Entity>(0, state.WorldUpdateAllocator);
 
             // We need to sync point before instantiate anyway so it's faster to run the jobs
-            var prefabLookup = this.CreatePrefabLookup(this.System.WorldUpdateAllocator);
+            var prefabLookup = this.CreatePrefabLookup(ref state, state.WorldUpdateAllocator);
 
             using var e = prefabLookup.GetEnumerator();
             while (e.MoveNext())
@@ -117,7 +113,7 @@ namespace BovineLabs.Saving
                 prefabLists.Add(e.Current.Key, new UnsafeList<Entity>(0, Allocator.Persistent));
             }
 
-            var savedEntities = new NativeParallelMultiHashMap<SavablePrefab, Entity>(0, this.System.WorldUpdateAllocator);
+            var savedEntities = new NativeParallelMultiHashMap<SavablePrefab, Entity>(0, state.WorldUpdateAllocator);
 
             new DeserializeJob
                 {
@@ -159,7 +155,7 @@ namespace BovineLabs.Saving
                     .ScheduleParallel(savedEntities, 64).Complete();
 
                 // can't use query because of linked entity groups
-                this.System.EntityManager.DestroyEntity(this.savablePrefabQuery.ToEntityArray(Allocator.Temp));
+                state.EntityManager.DestroyEntity(this.savablePrefabQuery.ToEntityArray(Allocator.Temp));
             }
 
             using (new ProfilerMarker("Instantiate").Auto())
@@ -172,7 +168,7 @@ namespace BovineLabs.Saving
                     // This should be faster in nearly all cases as batch query operations are much faster than per entity operations
                     // and there should always be more instances than prefabs.
                     // dependency.Complete();
-                    this.System.EntityManager.AddComponent<ToInitialize>(prefabLookup.GetValueArray(Allocator.Temp));
+                    state.EntityManager.AddComponent<ToInitialize>(prefabLookup.GetValueArray(Allocator.Temp));
                 }
 
                 using var saved = prefabLists.GetEnumerator();
@@ -187,7 +183,7 @@ namespace BovineLabs.Saving
                     newEntities.ResizeUninitialized(start + entities.Length);
                     oldEntities.AddRange(entities.Ptr, entities.Length);
 
-                    this.System.EntityManager.Instantiate(prefab, newEntities.AsArray().GetSubArray(start, entities.Length));
+                    state.EntityManager.Instantiate(prefab, newEntities.AsArray().GetSubArray(start, entities.Length));
 
                     current.Value.Dispose();
                 }
@@ -197,20 +193,20 @@ namespace BovineLabs.Saving
                 {
                     using (new ProfilerMarker("AddSharedComponentData").Auto())
                     {
-                        var sceneSection = this.System.EntityManager.GetSharedComponent<SceneSection>(scdIndex);
-                        this.System.EntityManager.AddSharedComponent(this.instantiateQuery, sceneSection);
+                        var sceneSection = state.EntityManager.GetSharedComponent<SceneSection>(scdIndex);
+                        state.EntityManager.AddSharedComponent(this.instantiateQuery, sceneSection);
                     }
 
                     using (new ProfilerMarker("RemoveComponent").Auto())
                     {
                         // TODO we can probably defer this
-                        this.System.EntityManager.RemoveComponent<ToInitialize>(this.initializedQuery);
+                        state.EntityManager.RemoveComponent<ToInitialize>(this.initializedQuery);
                     }
                 }
             }
 
             // We want to both read and write to this hashmap in RemapLinks so we need to clone it
-            var entityMappingClone = new NativeParallelHashMap<Entity, Entity>(0, this.System.WorldUpdateAllocator);
+            var entityMappingClone = new NativeParallelHashMap<Entity, Entity>(0, state.WorldUpdateAllocator);
 
             dependency = new PopulateEntityMaps
                 {
@@ -223,7 +219,7 @@ namespace BovineLabs.Saving
                 }
                 .Schedule(dependency);
 
-            this.saveableLinks.Update(ref this.System);
+            this.saveableLinks.Update(ref state);
 
             dependency = new RemapLinks
                 {
@@ -238,17 +234,17 @@ namespace BovineLabs.Saving
             return dependency;
         }
 
-        private NativeHashMap<SavablePrefabRecord, Entity> CreatePrefabLookup(Allocator allocator)
+        private NativeHashMap<SavablePrefabRecord, Entity> CreatePrefabLookup(ref SystemState state, Allocator allocator)
         {
-            this.entityHandle.Update(ref this.System);
-            this.savablePrefabHandle.Update(ref this.System);
+            this.entityHandle.Update(ref state);
+            this.savablePrefabHandle.Update(ref state);
 
             if (!this.savablePrefabGUIDQuery.TryGetSingletonBuffer<SavablePrefabRecord>(out var prefabGUIDs, true))
             {
                 return new NativeHashMap<SavablePrefabRecord, Entity>(0, allocator);
             }
 
-            // this.System.EntityManager.GetAllUniqueSharedComponents<SavablePrefab>(out var savables, allocator);
+            // state.EntityManager.GetAllUniqueSharedComponents<SavablePrefab>(out var savables, allocator);
             var lookup = new NativeHashMap<SavablePrefabRecord, Entity>(prefabGUIDs.Length, allocator);
 
             new CreatePrefabLookupJob
@@ -263,6 +259,7 @@ namespace BovineLabs.Saving
             return lookup;
         }
 
+        [BurstCompile]
         private struct CreatePrefabLookupJob : IJobChunk
         {
             public NativeHashMap<SavablePrefabRecord, Entity> Lookup;
@@ -285,14 +282,17 @@ namespace BovineLabs.Saving
                 {
                     var savablePrefab = savablePrefabs[i];
 
-                    Check.Assume(savablePrefab.Value < this.SavablePrefabGUIDs.Length);
+                    if (savablePrefab.Value >= this.SavablePrefabGUIDs.Length)
+                    {
+                        Debug.LogError("WTF?");
+                        continue;
+                    }
 
                     var guid = this.SavablePrefabGUIDs[savablePrefab.Value];
 
                     if (!this.Lookup.TryAdd(guid, entities[i]))
                     {
-                        Debug.LogError(
-                            $"More than one prefab of savable index {guid.Value0},{guid.Value1},{guid.Value2},{guid.Value3}, found in world, using first");
+                        Debug.LogError($"More than one prefab of savable index {guid.Value0},{guid.Value1},{guid.Value2},{guid.Value3}, found in world, using first");
                     }
                 }
             }
@@ -339,7 +339,7 @@ namespace BovineLabs.Saving
                         continue;
                     }
 
-                    capacity += chunk.Count * UnsafeUtility.SizeOf<Entity>() * UnsafeUtility.SizeOf<SavablePrefab>();
+                    capacity += chunk.Count * (UnsafeUtility.SizeOf<Entity>() + UnsafeUtility.SizeOf<SavablePrefab>());
                     var savableLinks = chunk.GetBufferAccessor(ref this.SavableLinksHandle);
 
                     for (var i = 0; i < savableLinks.Length; i++)
@@ -397,7 +397,7 @@ namespace BovineLabs.Saving
                 *headerSave = new HeaderSaver
                 {
                     Key = this.Key,
-                    LengthInBytes = this.Serializer.Data.Length,
+                    LengthInBytes = this.Serializer.Data->Length,
                 };
 
                 var headerSavable = this.Serializer.GetAllocation<HeaderSavable>(savableIdx);

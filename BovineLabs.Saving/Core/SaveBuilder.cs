@@ -1,17 +1,19 @@
 ﻿// <copyright file="SaveBuilder.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving
 {
     using System;
     using BovineLabs.Core.Assertions;
+    using BovineLabs.Saving.Data;
     using Unity.Collections;
     using Unity.Entities;
 
     /// <summary> SaveBuilder is a class for setting up various configurations for saving. </summary>
     public unsafe struct SaveBuilder : IDisposable
     {
+        private readonly Allocator allocator;
         private NativeList<ComponentType> all;
         private NativeList<ComponentType> any;
         private NativeList<ComponentType> none;
@@ -27,15 +29,10 @@ namespace BovineLabs.Saving
         private bool subSceneSaver;
 
         /// <summary>Initializes a new instance of the <see cref="SaveBuilder"/> struct. </summary>
-        /// <param name="system"> The system that will own the <see cref="SaveProcessor"/> and its dependencies. </param>
         /// <param name="allocator"> The allocator to use. Generally <see cref="Allocator.Persistent"/>. </param>
-        public SaveBuilder(ref SystemState system, Allocator allocator = Allocator.Persistent)
+        public SaveBuilder(Allocator allocator)
         {
-            fixed (SystemState* ptr = &system)
-            {
-                this.SystemPtr = ptr;
-            }
-
+            this.allocator = allocator;
             this.all = new NativeList<ComponentType>(allocator);
             this.any = new NativeList<ComponentType>(allocator);
             this.none = new NativeList<ComponentType>(allocator);
@@ -44,17 +41,12 @@ namespace BovineLabs.Saving
             this.entityQueries = new NativeList<EntityQuery>(allocator);
             this.unfilteredEntityQueries = new NativeList<EntityQuery>(allocator);
 
-            this.includeDisabled = false;
+            this.includeDisabled = true;
             this.subSceneSaver = false;
             this.DisableAutoCreateSavers = false;
             this.DisableCompression = false;
             this.UseExistingInstances = false;
         }
-
-        /// <summary> Gets the owning system. </summary>
-        public ref SystemState System => ref *this.SystemPtr;
-
-        public SystemState* SystemPtr { get; }
 
         // internal IEnumerable<ISaver> CustomSavers => this.customSavers; // TODO support again
 
@@ -85,22 +77,24 @@ namespace BovineLabs.Saving
         }
 
         /// <summary> Create a query from the current configuration. </summary>
+        /// <param name="state"> The executing system. </param>
         /// <param name="extraAllTypes"> Optional extra All types that can be included in the query. </param>
         /// <returns> A entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
-        public EntityQuery GetQuery(ReadOnlySpan<ComponentType> extraAllTypes = default)
+        public EntityQuery GetQuery(ref SystemState state, ReadOnlySpan<ComponentType> extraAllTypes = default, bool includePrefabs = false)
         {
             var desc = this.CreateDescription(extraAllTypes);
-            var query = desc.Build(ref this.System);
+            var query = desc.Build(ref state);
             this.AddQuery(query);
             return query;
         }
 
         /// <summary> Create a query from the current configuration. </summary>
+        /// <param name="state"> The executing system. </param>
         /// <param name="extraAllType"> Optional extra All type that can be included in the query. </param>
         /// <returns> A entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
-        public EntityQuery GetQuery(ComponentType extraAllType)
+        public EntityQuery GetQuery(ref SystemState state, ComponentType extraAllType)
         {
-            return this.GetQuery(new ReadOnlySpan<ComponentType>(&extraAllType, 1));
+            return this.GetQuery(ref state, new ReadOnlySpan<ComponentType>(&extraAllType, 1));
         }
 
         public void AddQuery(EntityQuery query)
@@ -129,6 +123,7 @@ namespace BovineLabs.Saving
 
         /// <summary> Add new components to the All field in the EntityQueryDesc. </summary>
         /// <param name="types"> The component types to add. </param>
+        /// <typeparam name="T"> The type of list with the components. </typeparam>
         /// <returns> Returns itself. </returns>
         public SaveBuilder WithAll<T>(ref T types)
             where T : unmanaged, INativeList<ComponentType>
@@ -162,6 +157,7 @@ namespace BovineLabs.Saving
 
         /// <summary> Add new components to the Any field in the EntityQueryDesc. </summary>
         /// <param name="types"> The component types to add. </param>
+        /// <typeparam name="T"> The type of list with the components. </typeparam>
         /// <returns> Returns itself. </returns>
         public SaveBuilder WithAny<T>(ref T types)
             where T : unmanaged, INativeList<ComponentType>
@@ -195,6 +191,7 @@ namespace BovineLabs.Saving
 
         /// <summary> Add new components to the None field in the EntityQueryDesc. </summary>
         /// <param name="types"> The component types to add. </param>
+        /// <typeparam name="T"> The type of list with the components. </typeparam>
         /// <returns> Returns itself. </returns>
         public SaveBuilder WithNone<T>(ref T types)
             where T : unmanaged, INativeList<ComponentType>
@@ -249,14 +246,11 @@ namespace BovineLabs.Saving
             return this;
         }
 
-        /// <summary>
-        /// Should disabled entities also be saved? Note if this is set to true these entities will not be disabled automatically on loading the save.
-        /// This needs to be handled by the user.
-        /// </summary>
+        /// <summary> Disabling saving of Disabled entities? </summary>
         /// <returns> Returns itself. </returns>
-        public SaveBuilder WithIncludeDisabled()
+        public SaveBuilder WithExcludeDisabled()
         {
-            this.includeDisabled = true;
+            this.includeDisabled = false;
             return this;
         }
 
@@ -268,13 +262,13 @@ namespace BovineLabs.Saving
             return this;
         }
 
-        /// <summary> If set, only savers in <see cref="WithSavers"/> will be used. </summary>
-        /// <returns> Returns itself. </returns>
-        public SaveBuilder DoNotAutoCreateSavers()
-        {
-            this.DisableAutoCreateSavers = true;
-            return this;
-        }
+        // /// <summary> If set, only savers in <see cref="WithSavers"/> will be used. </summary>
+        // /// <returns> Returns itself. </returns>
+        // public SaveBuilder DoNotAutoCreateSavers()
+        // {
+        //     this.DisableAutoCreateSavers = true;
+        //     return this;
+        // }
 
         /// <summary>
         /// By default the file is compressed to reduce file size, this turns that off.
@@ -300,16 +294,16 @@ namespace BovineLabs.Saving
         }
 
         /// <summary> Creates the <see cref="SaveProcessor"/> based off the configuration specified in this builder. </summary>
-        /// <param name="allocator"> Allocator to use for the processor. </param>
+        /// <param name="state"> The executing system. </param>
         /// <returns> A new <see cref="SaveProcessor"/> instance. </returns>
-        public SaveProcessor Create(Allocator allocator = Allocator.Persistent)
+        public SaveProcessor Create(ref SystemState state)
         {
-            return new SaveProcessor(this, allocator);
+            return new SaveProcessor(ref state, this, this.allocator);
         }
 
-        public SaveBuilder Clone(Allocator allocator = Allocator.Persistent, bool includeSubSceneSaver = false)
+        public SaveBuilder Clone(bool includeSubSceneSaver = false)
         {
-            var sb = new SaveBuilder(ref this.System, allocator);
+            var sb = new SaveBuilder(this.allocator);
             sb.all.AddRange(this.all.AsArray());
             sb.any.AddRange(this.any.AsArray());
             sb.none.AddRange(this.none.AsArray());
@@ -328,17 +322,26 @@ namespace BovineLabs.Saving
         }
 
         /// <summary> Create a query from the current configuration. </summary>
+        /// <param name="state"> The executing system. </param>
         /// <param name="extraAllTypes"> Optional extra All types that can be included in the query. </param>
-        /// <returns> An entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
-        internal EntityQuery GetQueryUnfiltered(ReadOnlySpan<ComponentType> extraAllTypes = default)
+        /// <returns> A entity query linked to the system that owns the SaveBuilder. It does not need disposing as the system will handle it. </returns>
+        internal EntityQuery GetQueryUnfiltered(ref SystemState state, ReadOnlySpan<ComponentType> extraAllTypes = default)
         {
             var desc = this.CreateUnfilteredDescription(extraAllTypes);
-            var query = desc.Build(ref this.System);
+            var query = desc.Build(ref state);
             this.unfilteredEntityQueries.Add(query);
             return query;
         }
 
-        private EntityQueryBuilder CreateDescription(ReadOnlySpan<ComponentType> extraAllType)
+        internal EntityQuery GetPrefabQuery(ref SystemState state, ReadOnlySpan<ComponentType> extraAllTypes = default)
+        {
+            var desc = this.CreateDescription(extraAllTypes, true);
+            var query = desc.Build(ref state);
+            this.AddQuery(query);
+            return query;
+        }
+
+        private EntityQueryBuilder CreateDescription(ReadOnlySpan<ComponentType> extraAllType, bool includePrefabs = false)
         {
             var allTypes = new NativeList<ComponentType>(this.all.Length, Allocator.Temp);
             var noneTypes = new NativeList<ComponentType>(this.none.Length, Allocator.Temp);
@@ -364,12 +367,22 @@ namespace BovineLabs.Saving
                 allTypes.Add(c);
             }
 
+            var options = EntityQueryOptions.IgnoreComponentEnabledState;
+            if (this.includeDisabled)
+            {
+                options |= EntityQueryOptions.IncludeDisabledEntities;
+            }
+
+            if (includePrefabs)
+            {
+                options |= EntityQueryOptions.IncludePrefab;
+            }
+
             return new EntityQueryBuilder(Allocator.Temp)
                 .WithAll(ref allTypes)
                 .WithNone(ref noneTypes)
                 .WithAny(ref anyTypes)
-                .WithOptions((this.includeDisabled ? EntityQueryOptions.IncludeDisabledEntities : EntityQueryOptions.Default) |
-                             EntityQueryOptions.IgnoreComponentEnabledState);
+                .WithOptions(options);
         }
 
         private EntityQueryBuilder CreateUnfilteredDescription(ReadOnlySpan<ComponentType> extraAllType)

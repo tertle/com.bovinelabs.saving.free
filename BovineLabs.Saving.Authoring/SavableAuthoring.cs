@@ -1,10 +1,11 @@
 ﻿// <copyright file="SavableAuthoring.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving.Authoring
 {
     using System.Linq;
+    using BovineLabs.Saving.Data;
     using Unity.Entities;
     using UnityEditor;
     using UnityEngine;

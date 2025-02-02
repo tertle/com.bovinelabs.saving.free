@@ -1,11 +1,13 @@
 ﻿// <copyright file="SavableSceneSaver.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving
 {
+    using System;
     using BovineLabs.Core.Extensions;
     using BovineLabs.Core.Utility;
+    using BovineLabs.Saving.Data;
     using Unity.Burst;
     using Unity.Collections;
     using Unity.Collections.LowLevel.Unsafe;
@@ -16,8 +18,6 @@ namespace BovineLabs.Saving
 
     internal unsafe struct SavableSceneSaver : ISaver
     {
-        private readonly SystemState* system;
-
         private EntityTypeHandle entityTypeHandle;
         private ComponentTypeHandle<SavableScene> savableSceneHandleRO;
         private BufferTypeHandle<SavableLinks> savableLinksHandleRO;
@@ -27,56 +27,51 @@ namespace BovineLabs.Saving
         private EntityQuery savableRecordQuery;
         private EntityQuery commandBufferQuery;
 
-        public SavableSceneSaver(SaveBuilder builder)
+        public SavableSceneSaver(ref SystemState state, SaveBuilder builder)
         {
             this.Key = TypeManager.GetTypeInfo<SavableScene>().StableTypeHash;
-            this.system = builder.SystemPtr;
 
             // This is used to match to the record for destroyed entity
             // If we used filtered it would think that all ignored entities were destroyed
             // and it's only used to build a hashset for matching, not actually saving
-            this.savableUnfilteredQuery = builder.GetQueryUnfiltered(stackalloc[] { ComponentType.ReadOnly<SavableScene>(), });
+            var savableSceneComponents = stackalloc[] { ComponentType.ReadOnly<SavableScene>(), };
+            this.savableUnfilteredQuery = builder.GetQueryUnfiltered(ref state, new ReadOnlySpan<ComponentType>(savableSceneComponents, 1));
 
-            this.savableRecordQuery = builder.GetQueryUnfiltered(stackalloc[]
-            {
-                ComponentType.ReadOnly<SavableSceneRecord>(),
-                ComponentType.ReadOnly<SavableSceneRecordEntity>(),
-            });
+            var recordComponents = stackalloc[] { ComponentType.ReadOnly<SavableSceneRecord>(), ComponentType.ReadOnly<SavableSceneRecordEntity>() };
+            this.savableRecordQuery = builder.GetQueryUnfiltered(ref state, new ReadOnlySpan<ComponentType>(recordComponents, 2));
 
-            this.entityTypeHandle = builder.System.GetEntityTypeHandle();
-            this.savableSceneHandleRO = builder.System.GetComponentTypeHandle<SavableScene>(true);
-            this.savableLinksHandleRO = builder.System.GetBufferTypeHandle<SavableLinks>(true);
-            this.savableLinks = builder.System.GetBufferLookup<SavableLinks>();
+            this.entityTypeHandle = state.GetEntityTypeHandle();
+            this.savableSceneHandleRO = state.GetComponentTypeHandle<SavableScene>(true);
+            this.savableLinksHandleRO = state.GetBufferTypeHandle<SavableLinks>(true);
+            this.savableLinks = state.GetBufferLookup<SavableLinks>();
 
             this.commandBufferQuery = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<BeginSimulationEntityCommandBufferSystem.Singleton>()
                 .WithOptions(EntityQueryOptions.IncludeSystems)
-                .Build(ref builder.System);
+                .Build(ref state);
         }
 
         /// <inheritdoc/>
         public ulong Key { get; }
 
-        private ref SystemState System => ref *this.system;
-
         /// <inheritdoc/>
-        public (Serializer Serializer, JobHandle Dependency) Serialize(NativeList<ArchetypeChunk> chunks, JobHandle dependency)
+        public (Serializer Serializer, JobHandle Dependency) Serialize(ref SystemState state, NativeList<ArchetypeChunk> chunks, JobHandle dependency)
         {
-            this.entityTypeHandle.Update(ref this.System);
-            this.savableSceneHandleRO.Update(ref this.System);
-            this.savableLinksHandleRO.Update(ref this.System);
+            this.entityTypeHandle.Update(ref state);
+            this.savableSceneHandleRO.Update(ref state);
+            this.savableLinksHandleRO.Update(ref state);
 
             var subSceneRecords = this.savableRecordQuery.TryGetSingletonBuffer<SavableSceneRecord>(out var subSceneBuffer, true)
                 ? subSceneBuffer.AsNativeArray()
-                : CollectionHelper.CreateNativeArray<SavableSceneRecord>(0, this.System.WorldUpdateAllocator);
+                : CollectionHelper.CreateNativeArray<SavableSceneRecord>(0, state.WorldUpdateAllocator);
 
             var subSceneRecordEntitys = this.savableRecordQuery.TryGetSingletonBuffer<SavableSceneRecordEntity>(out var subSceneEntityBuffer, true)
                 ? subSceneEntityBuffer.AsNativeArray()
-                : CollectionHelper.CreateNativeArray<SavableSceneRecordEntity>(0, this.System.WorldUpdateAllocator);
+                : CollectionHelper.CreateNativeArray<SavableSceneRecordEntity>(0, state.WorldUpdateAllocator);
 
-            var serializer = new Serializer(0, this.System.WorldUpdateAllocator);
+            var serializer = new Serializer(0, state.WorldUpdateAllocator);
 
-            var unfilteredChunks = this.savableUnfilteredQuery.ToArchetypeChunkListAsync(this.System.WorldUpdateAllocator, dependency, out dependency);
+            var unfilteredChunks = this.savableUnfilteredQuery.ToArchetypeChunkListAsync(state.WorldUpdateAllocator, dependency, out dependency);
 
             dependency = new SerializeJob
                 {
@@ -96,19 +91,19 @@ namespace BovineLabs.Saving
         }
 
         /// <inheritdoc/>
-        public JobHandle Deserialize(Deserializer deserializer, EntityMap entityMap, JobHandle dependency)
+        public JobHandle Deserialize(ref SystemState state, Deserializer deserializer, EntityMap entityMap, JobHandle dependency)
         {
-            this.entityTypeHandle.Update(ref this.System);
-            this.savableLinks.Update(ref this.System);
+            this.entityTypeHandle.Update(ref state);
+            this.savableLinks.Update(ref state);
 
-            var work = new NativeList<int>(16, this.System.WorldUpdateAllocator);
+            var work = new NativeList<int>(16, state.WorldUpdateAllocator);
 
             var commandBufferSystem = this.commandBufferQuery.GetSingleton<BeginSimulationEntityCommandBufferSystem.Singleton>();
-            var commandBuffer = commandBufferSystem.CreateCommandBuffer(this.System.WorldUnmanaged);
+            var commandBuffer = commandBufferSystem.CreateCommandBuffer(state.WorldUnmanaged);
 
-            var currentEntities = new NativeParallelHashMap<SavableSceneRecord, Entity>(0, this.System.WorldUpdateAllocator);
+            var currentEntities = new NativeParallelHashMap<SavableSceneRecord, Entity>(0, state.WorldUpdateAllocator);
 
-            if (!this.savableRecordQuery.IsEmptyIgnoreFilter)
+            if (!this.savableRecordQuery.IsEmpty)
             {
                 var subSceneRecords = this.savableRecordQuery.GetSingletonBuffer<SavableSceneRecord>().AsNativeArray();
                 var subSceneRecordEntities = this.savableRecordQuery.GetSingletonBuffer<SavableSceneRecordEntity>().AsNativeArray();
@@ -122,7 +117,7 @@ namespace BovineLabs.Saving
                     .Schedule(dependency);
             }
 
-            var entitySavableMapping = new NativeParallelHashMap<int, Entity>(0, this.System.WorldUpdateAllocator);
+            var entitySavableMapping = new NativeParallelHashMap<int, Entity>(0, state.WorldUpdateAllocator);
 
             dependency = new DeserializeSplitJob
                 {
@@ -317,7 +312,7 @@ namespace BovineLabs.Saving
                 *headerSave = new HeaderSaver
                 {
                     Key = this.Key,
-                    LengthInBytes = this.Serializer.Data.Length,
+                    LengthInBytes = this.Serializer.Data->Length,
                 };
 
                 var headerSavable = this.Serializer.GetAllocation<HeaderSavable>(savableIdx);

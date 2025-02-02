@@ -1,10 +1,11 @@
 ﻿// <copyright file="SavableBakingSystem.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving.Authoring
 {
     using System;
+    using BovineLabs.Saving.Data;
     using Unity.Burst;
     using Unity.Collections;
     using Unity.Collections.LowLevel.Unsafe;
@@ -14,12 +15,6 @@ namespace BovineLabs.Saving.Authoring
     [WorldSystemFilter(WorldSystemFilterFlags.BakingSystem)]
     public partial struct SavableBakingSystem : ISystem
     {
-        private struct RecordData
-        {
-            public NativeList<SavableSceneRecord> Records;
-            public NativeList<Entity> Entities;
-        }
-
         /// <inheritdoc/>
         [BurstCompile]
         public void OnUpdate(ref SystemState state)
@@ -28,7 +23,6 @@ namespace BovineLabs.Saving.Authoring
             var oldQuery = SystemAPI.QueryBuilder().WithAny<SavablePrefabRecord, SavableSceneRecord>().Build();
             state.EntityManager.DestroyEntity(oldQuery);
 
-            // TODO remove parallel
             var prefabs = new NativeHashMap<SceneSectionWrapper, NativeList<SavablePrefabRecord>>(8, state.WorldUpdateAllocator);
             var records = new NativeHashMap<SceneSectionWrapper, RecordData>(8, state.WorldUpdateAllocator);
             var ecb = new EntityCommandBuffer(state.WorldUpdateAllocator);
@@ -127,6 +121,12 @@ namespace BovineLabs.Saving.Authoring
                 var recordEntityBuffer = state.EntityManager.GetBuffer<SavableSceneRecordEntity>(recordEntity).Reinterpret<Entity>();
                 recordEntityBuffer.AddRange(current.Value.Entities.AsArray());
             }
+        }
+
+        private struct RecordData
+        {
+            public NativeList<SavableSceneRecord> Records;
+            public NativeList<Entity> Entities;
         }
 
         private struct SceneSectionWrapper : IEquatable<SceneSectionWrapper>, IComparable<SceneSectionWrapper>

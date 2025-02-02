@@ -1,5 +1,5 @@
 ﻿// <copyright file="ComponentDataSave.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving
@@ -23,32 +23,27 @@ namespace BovineLabs.Saving
     /// <summary> Saves <see cref="IComponentData"/>. </summary>
     public unsafe struct ComponentDataSave : ISaver, IDisposable
     {
-        private readonly SystemState* system;
-
         private ComponentSave componentSave;
         private EntityTypeHandle entityHandle;
         private DynamicComponentTypeHandle dynamicHandle;
         private DynamicComponentTypeHandle dynamicHandleRW;
 
-        public ComponentDataSave(SaveBuilder builder, ComponentSaveState state)
+        public ComponentDataSave(ref SystemState state, SaveBuilder builder, ComponentSaveState saveState)
         {
-            this.Key = state.StableTypeHash;
-            this.system = builder.SystemPtr;
-            this.componentSave = new ComponentSave(builder, state);
+            this.Key = saveState.StableTypeHash;
+            this.componentSave = new ComponentSave(ref state, builder, saveState);
 
             Assert.IsTrue(this.componentSave.TypeInfo.Category == TypeManager.TypeCategory.ComponentData);
             Assert.IsTrue(
-                this.componentSave.TypeInfo.ElementSize > 0 || this.componentSave.TypeIndex.IsEnableable,
+                this.componentSave.TypeInfo.ElementSize > 0 || this.componentSave.TypeIndex.IsEnableable || (saveState.Feature & SaveFeature.AddComponent) != 0,
                 "Saving zero size component that isn't IsEnableable");
 
-            this.entityHandle = this.componentSave.System.GetEntityTypeHandle();
-            this.dynamicHandle = this.componentSave.System.GetDynamicComponentTypeHandle(ComponentType.ReadOnly(this.componentSave.TypeIndex));
-            this.dynamicHandleRW = this.componentSave.System.GetDynamicComponentTypeHandle(ComponentType.ReadWrite(this.componentSave.TypeIndex));
+            this.entityHandle = state.GetEntityTypeHandle();
+            this.dynamicHandle = state.GetDynamicComponentTypeHandle(ComponentType.ReadOnly(this.componentSave.TypeIndex));
+            this.dynamicHandleRW = state.GetDynamicComponentTypeHandle(ComponentType.ReadWrite(this.componentSave.TypeIndex));
         }
 
         public ulong Key { get; }
-
-        private ref SystemState System => ref *this.system;
 
         public void Dispose()
         {
@@ -56,12 +51,12 @@ namespace BovineLabs.Saving
         }
 
         /// <inheritdoc/>
-        public (Serializer Serializer, JobHandle Dependency) Serialize(NativeList<ArchetypeChunk> chunks, JobHandle dependency)
+        public (Serializer Serializer, JobHandle Dependency) Serialize(ref SystemState state, NativeList<ArchetypeChunk> chunks, JobHandle dependency)
         {
-            this.entityHandle.Update(ref this.componentSave.System);
-            this.dynamicHandle.Update(ref this.componentSave.System);
+            this.entityHandle.Update(ref state);
+            this.dynamicHandle.Update(ref state);
 
-            var serializer = new Serializer(0, this.componentSave.System.WorldUpdateAllocator);
+            var serializer = new Serializer(0, state.WorldUpdateAllocator);
 
             dependency = new SerializeJob
                 {
@@ -79,13 +74,13 @@ namespace BovineLabs.Saving
         }
 
         /// <inheritdoc/>
-        public JobHandle Deserialize(Deserializer deserializer, EntityMap entityMap, JobHandle dependency)
+        public JobHandle Deserialize(ref SystemState state, Deserializer deserializer, EntityMap entityMap, JobHandle dependency)
         {
-            this.entityHandle.Update(ref this.componentSave.System);
-            this.dynamicHandleRW.Update(ref this.componentSave.System);
+            this.entityHandle.Update(ref state);
+            this.dynamicHandleRW.Update(ref state);
 
-            var deserializedData = new NativeHashMap<Entity, DeserializedEntityData>(128, this.componentSave.System.WorldUpdateAllocator);
-            var setEnableable = new NativeReference<bool>(this.componentSave.TypeIndex.IsEnableable, this.componentSave.System.WorldUpdateAllocator);
+            var deserializedData = new NativeHashMap<Entity, DeserializedEntityData>(128, state.WorldUpdateAllocator);
+            var setEnableable = new NativeReference<bool>(this.componentSave.TypeIndex.IsEnableable, state.WorldUpdateAllocator);
 
             dependency = new DeserializeJob
                 {
@@ -125,7 +120,7 @@ namespace BovineLabs.Saving
                             ElementSize = this.componentSave.TypeInfo.ElementSize,
                             EntityOffsets = this.componentSave.EntityOffsets,
                             Remap = entityMap,
-                            CommandBuffer = this.componentSave.CreateCommandBuffer().AsParallelWriter(),
+                            CommandBuffer = this.componentSave.CreateCommandBuffer(ref state).AsParallelWriter(),
                         }
                         .ScheduleParallel(deserializedData, 64, dependency);
                 }
@@ -238,7 +233,7 @@ namespace BovineLabs.Saving
                 *headerSave = new HeaderSaver
                 {
                     Key = this.Key,
-                    LengthInBytes = this.Serializer.Data.Length,
+                    LengthInBytes = this.Serializer.Data->Length,
                 };
 
                 var compSave = this.Serializer.GetAllocation<ComponentSave.HeaderComponent>(compIdx);

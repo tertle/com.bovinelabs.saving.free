@@ -1,5 +1,5 @@
 ﻿// <copyright file="SavableSaver.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving
@@ -22,10 +22,8 @@ namespace BovineLabs.Saving
         /// <inheritdoc />
         public ulong Key { get; }
 
-        /// <inheritdoc/>
-        public abstract (Serializer Serializer, JobHandle Dependency) Serialize(NativeList<ArchetypeChunk> chunks, JobHandle dependency);
+        public abstract (Serializer Serializer, JobHandle Dependency) Serialize(ref SystemState state, NativeList<ArchetypeChunk> chunks, JobHandle dependency);
 
-        /// <inheritdoc/>
-        public abstract JobHandle Deserialize(Deserializer deserializer, EntityMap entityMap, JobHandle dependency);
+        public abstract JobHandle Deserialize(ref SystemState state, Deserializer deserializer, EntityMap entityMap, JobHandle dependency);
     }
 }

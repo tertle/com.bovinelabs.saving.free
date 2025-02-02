@@ -1,19 +1,19 @@
 {
-    "name": "BovineLabs.Saving",
+    "name": "BovineLabs.Saving.Data",
     "rootNamespace": "",
     "references": [
         "BovineLabs.Core",
         "BovineLabs.Core.Extensions",
-        "BovineLabs.Saving.Data",
         "Unity.Burst",
         "Unity.Collections",
         "Unity.Entities",
+        "Unity.Entities.Graphics",
         "Unity.Entities.Hybrid",
+        "Unity.InputSystem",
         "Unity.Logging",
         "Unity.Mathematics",
         "Unity.Mathematics.Extensions",
         "Unity.Physics",
-        "Unity.Scenes",
         "Unity.Transforms"
     ],
     "includePlatforms": [],
@@ -21,24 +21,8 @@
     "allowUnsafeCode": true,
     "overrideReferences": false,
     "precompiledReferences": [],
-    "autoReferenced": true,
+    "autoReferenced": false,
     "defineConstraints": [],
-    "versionDefines": [
-        {
-            "name": "com.unity.physics",
-            "expression": "",
-            "define": "UNITY_PHYSICS"
-        },
-        {
-            "name": "com.unity.physics",
-            "expression": "",
-            "define": "ENABLE_TRANSFORM_V1"
-        },
-        {
-            "name": "com.unity.netcode",
-            "expression": "",
-            "define": "ENABLE_TRANSFORM_V1"
-        }
-    ],
+    "versionDefines": [],
     "noEngineReferences": false
 }

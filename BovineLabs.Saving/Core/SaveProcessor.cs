@@ -1,5 +1,5 @@
 ﻿// <copyright file="SaveProcessor.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving
@@ -11,13 +11,13 @@ namespace BovineLabs.Saving
     using BovineLabs.Core.Extensions;
     using BovineLabs.Core.Internal;
     using BovineLabs.Core.Utility;
+    using BovineLabs.Saving.Migrate;
     using Unity.Assertions;
     using Unity.Burst;
     using Unity.Collections;
     using Unity.Collections.LowLevel.Unsafe;
     using Unity.Entities;
     using Unity.Jobs;
-    using Unity.Physics;
     using Unity.Profiling;
     using Unity.Transforms;
     using UnityEngine;
@@ -42,28 +42,30 @@ namespace BovineLabs.Saving
         private NativeHashMap<ulong, ComponentDataSave> componentSavers;
         private NativeHashMap<ulong, BufferElementDataSave> bufferSavers;
 
+        private NativeHashMap<ulong, FunctionPointer<MigrateDelegate>> migrators;
+
         private NativeList<(ulong Key, Serializer Serializer)> serializerMap;
 
-        internal SaveProcessor(SaveBuilder saveBuilder, Allocator allocator = Allocator.Persistent)
+        internal SaveProcessor(ref SystemState state, SaveBuilder saveBuilder, Allocator allocator = Allocator.Persistent)
         {
             this.builder = saveBuilder;
 
             this.componentSavers = new NativeHashMap<ulong, ComponentDataSave>(0, allocator);
             this.bufferSavers = new NativeHashMap<ulong, BufferElementDataSave>(0, allocator);
+            this.migrators = new NativeHashMap<ulong, FunctionPointer<MigrateDelegate>>(0, allocator);
 
             this.serializerMap = new NativeList<(ulong Key, Serializer Serializer)>(allocator);
 
             this.disableCompression = this.builder.DisableCompression;
-            this.sharedQuery = this.builder.GetQuery();
+            this.sharedQuery = this.builder.GetQuery(ref state);
             this.subSceneFilter = default;
 
-            this.savablePrefabSaver = new SavablePrefabSaver(this.builder);
-            this.savableSceneSaver = new SavableSceneSaver(this.builder);
+            this.savablePrefabSaver = new SavablePrefabSaver(ref state, this.builder);
+            this.savableSceneSaver = new SavableSceneSaver(ref state, this.builder);
 
-            this.SetupAllSavers();
+            this.SetupAllSavers(ref state);
+            this.SetupAllMigrators();
         }
-
-        private ref SystemState System => ref this.builder.System;
 
         private int SaverCount => this.componentSavers.Count + this.bufferSavers.Count + 3;
 
@@ -85,23 +87,24 @@ namespace BovineLabs.Saving
 
             this.componentSavers.Dispose();
             this.bufferSavers.Dispose();
+            this.migrators.Dispose();
             this.serializerMap.Dispose();
         }
 
-        public JobHandle Save(ref NativeList<byte> saveData, JobHandle dependency)
+        public JobHandle Save(ref SystemState state, NativeList<byte> saveData, JobHandle dependency)
         {
-            dependency = this.Serialize(dependency);
+            dependency = this.Serialize(ref state, dependency);
             dependency = this.Compress(dependency);
-            dependency = this.Merge(ref saveData, dependency);
+            dependency = this.Merge(ref state, saveData, dependency);
 
             return dependency;
         }
 
-        public JobHandle Load(NativeArray<byte> compressed, JobHandle dependency)
+        public JobHandle Load(ref SystemState state, NativeArray<byte> compressed, JobHandle dependency)
         {
-            var decompressed = this.Decompress(compressed);
-            var deserializers = this.Split(decompressed);
-            dependency = this.Deserialize(deserializers, dependency);
+            var decompressed = this.Decompress(ref state, compressed);
+            var deserializers = this.Split(ref state, decompressed);
+            dependency = this.Deserialize(ref state, deserializers, dependency);
 
             return dependency;
         }
@@ -130,7 +133,7 @@ namespace BovineLabs.Saving
                 return;
             }
 
-            foreach (EntityQuery query in this.builder.EntityQueries)
+            foreach (var query in this.builder.EntityQueries)
             {
                 // We have a saved sub scene filter, ensure we add it back
                 if (this.subSceneFilter.SceneGUID != default)
@@ -166,10 +169,22 @@ namespace BovineLabs.Saving
             {
                 // Add custom savers for common components we don't have control over
                 new(ComponentType.ReadWrite<LocalTransform>()),
+                new(ComponentType.ReadWrite<Disabled>(), SaveFeature.AddComponent),
 #if UNITY_PHYSICS
-                new(ComponentType.ReadWrite<PhysicsVelocity>()),
+                new(ComponentType.ReadWrite<Unity.Physics.PhysicsVelocity>()),
 #endif
             };
+        }
+
+        private static (ulong From, MigrateDelegate Migrator) CreateMigrator((MethodInfo Method, MigrateAttribute Attribute) m)
+        {
+            var result = (MigrateDelegate)Delegate.CreateDelegate(typeof(MigrateDelegate), m.Method, false);
+            if (result == null)
+            {
+                Debug.LogError($"Unable to create migrator for {m.Method.Name} likely due to parameter miss match");
+            }
+
+            return (m.Attribute.From, result);
         }
 
         private void SetSectionFilterOnQuery(EntityQuery query, SceneSection sectionSection)
@@ -216,36 +231,36 @@ namespace BovineLabs.Saving
             }
         }
 
-        private void SetupAllSavers()
+        private void SetupAllSavers(ref SystemState state)
         {
             if (this.builder.DisableAutoCreateSavers)
             {
                 return;
             }
 
-            foreach (var state in BuiltInSavers(this.System.WorldUpdateAllocator).AsArray())
+            foreach (var saver in BuiltInSavers(state.WorldUpdateAllocator).AsArray())
             {
-                ref readonly var type = ref TypeManager.GetTypeInfo(TypeManager.GetTypeIndexFromStableTypeHash(state.StableTypeHash));
+                ref readonly var type = ref TypeManager.GetTypeInfo(TypeManager.GetTypeIndexFromStableTypeHash(saver.StableTypeHash));
 
                 switch (type.Category)
                 {
                     case TypeManager.TypeCategory.ComponentData:
-                        this.AddComponentSaver(state);
+                        this.AddComponentSaver(ref state, saver);
                         break;
                     case TypeManager.TypeCategory.BufferData:
-                        this.AddBufferSaver(state);
+                        this.AddBufferSaver(ref state, saver);
                         break;
                 }
             }
 
             foreach (var type in this.builder.ComponentSavers)
             {
-                this.AddComponentSaver(type);
+                this.AddComponentSaver(ref state, type);
             }
 
             foreach (var type in this.builder.BufferSavers)
             {
-                this.AddBufferSaver(type);
+                this.AddBufferSaver(ref state, type);
             }
 
             foreach (var type in TypeManager.AllTypes)
@@ -260,7 +275,7 @@ namespace BovineLabs.Saving
                     var saveAttribute = type.Type.GetCustomAttribute<SaveAttribute>();
                     if (saveAttribute != null)
                     {
-                        this.AddComponentSaver(new ComponentSaveState(ComponentType.FromTypeIndex(type.TypeIndex), saveAttribute.Feature));
+                        this.AddComponentSaver(ref state, new ComponentSaveState(ComponentType.FromTypeIndex(type.TypeIndex), saveAttribute.Feature));
                     }
                 }
                 else if (type.Category == TypeManager.TypeCategory.BufferData)
@@ -268,7 +283,7 @@ namespace BovineLabs.Saving
                     var saveAttribute = type.Type.GetCustomAttribute<SaveAttribute>();
                     if (saveAttribute != null)
                     {
-                        this.AddBufferSaver(new ComponentSaveState(ComponentType.FromTypeIndex(type.TypeIndex), saveAttribute.Feature));
+                        this.AddBufferSaver(ref state, new ComponentSaveState(ComponentType.FromTypeIndex(type.TypeIndex), saveAttribute.Feature));
                     }
                 }
             }
@@ -281,19 +296,46 @@ namespace BovineLabs.Saving
             // }
         }
 
-        private void AddComponentSaver(ComponentSaveState state)
+        /// <summary>
+        /// This finds all methods that have been setup as function pointers with the <see cref="MigrateAttribute"/>.
+        /// 1. Find all assemblies that reference this assembly which is required for the  <see cref="MigrateAttribute"/>.
+        /// 2. Find all static classes that have <see cref="BurstCompileAttribute"/> as we require this to be burst compiled.
+        /// 3. Find any methods inside these classes that have both <see cref="BurstCompileAttribute"/> and <see cref="MigrateAttribute"/>.
+        /// 4. Create a <see cref="MigrateDelegate"/> from this method. If the signature doesn't match it will return null.
+        /// 5. Populate our map with From and <see cref="MigrateDelegate"/> pairs to be used for migration.
+        /// </summary>
+        private void SetupAllMigrators()
         {
-            var saver = new ComponentDataSave(this.builder, state);
+            var delegates = ReflectionUtility.GetAllAssemblyWithReference(this.GetType().Assembly)
+                .SelectMany(a => a.GetTypes())
+                .Where(t => t.IsClass && t.IsAbstract && t.IsSealed) // Find all static classes
+                .Where(t => t.GetCustomAttribute<BurstCompileAttribute>() != null)
+                .SelectMany(t => t.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+                .Where(t => t.GetCustomAttribute<BurstCompileAttribute>() != null && !t.Name.EndsWith("BurstManaged")) // 1.8.3 returns default + burst methods
+                .Select(m => (MethodInfo: m, Attribute: m.GetCustomAttribute<MigrateAttribute>()))
+                .Where(m => m.Attribute != null && m.Attribute.From != 0)
+                .Select(CreateMigrator)
+                .Where(m => m.Migrator != null);
+
+            foreach (var (from, migrator) in delegates)
+            {
+                this.migrators.Add(from, BurstCompiler.CompileFunctionPointer(migrator));
+            }
+        }
+
+        private void AddComponentSaver(ref SystemState state, ComponentSaveState saveState)
+        {
+            var saver = new ComponentDataSave(ref state, this.builder, saveState);
             this.componentSavers.Add(saver.Key, saver);
         }
 
-        private void AddBufferSaver(ComponentSaveState state)
+        private void AddBufferSaver(ref SystemState state, ComponentSaveState saveState)
         {
-            var saver = new BufferElementDataSave(this.builder, state);
+            var saver = new BufferElementDataSave(ref state, this.builder, saveState);
             this.bufferSavers.Add(saver.Key, saver);
         }
 
-        private JobHandle Serialize(JobHandle dependency)
+        private JobHandle Serialize(ref SystemState state, JobHandle dependency)
         {
             using (SerializeMarker.Auto())
             {
@@ -302,20 +344,20 @@ namespace BovineLabs.Saving
                 var handles = new NativeArray<JobHandle>(this.SaverCount, Allocator.Temp);
                 var index = 0;
 
-                var chunks = this.sharedQuery.ToArchetypeChunkListAsync(this.System.WorldUpdateAllocator, dependency, out var chunkDependency);
+                var chunks = this.sharedQuery.ToArchetypeChunkListAsync(state.WorldUpdateAllocator, dependency, out var chunkDependency);
                 dependency = chunkDependency;
 
-                handles[index++] = this.Serialize(this.savablePrefabSaver, chunks, dependency);
-                handles[index++] = this.Serialize(this.savableSceneSaver, chunks, dependency);
+                handles[index++] = this.Serialize(ref state, this.savablePrefabSaver, chunks, dependency);
+                handles[index++] = this.Serialize(ref state, this.savableSceneSaver, chunks, dependency);
 
                 foreach (var saver in this.componentSavers)
                 {
-                    handles[index++] = this.Serialize(saver.Value, chunks, dependency);
+                    handles[index++] = this.Serialize(ref state, saver.Value, chunks, dependency);
                 }
 
                 foreach (var saver in this.bufferSavers)
                 {
-                    handles[index++] = this.Serialize(saver.Value, chunks, dependency);
+                    handles[index++] = this.Serialize(ref state, saver.Value, chunks, dependency);
                 }
 
                 dependency = JobHandle.CombineDependencies(handles);
@@ -325,10 +367,10 @@ namespace BovineLabs.Saving
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private JobHandle Serialize<T>(T saver, in NativeList<ArchetypeChunk> chunks, JobHandle dependency)
+        private JobHandle Serialize<T>(ref SystemState state, T saver, in NativeList<ArchetypeChunk> chunks, JobHandle dependency)
             where T : unmanaged, ISaver
         {
-            var (serializer, newDependency) = saver.Serialize(chunks, dependency);
+            var (serializer, newDependency) = saver.Serialize(ref state, chunks, dependency);
             this.serializerMap.Add((saver.Key, serializer));
             return newDependency;
         }
@@ -360,12 +402,12 @@ namespace BovineLabs.Saving
             }
         }
 
-        private JobHandle Merge(ref NativeList<byte> saveData, JobHandle dependency)
+        private JobHandle Merge(ref SystemState state, NativeList<byte> saveData, JobHandle dependency)
         {
             using (MergeMarker.Auto())
             {
-                var keyIndexMap = new NativeHashMap<ulong, int>(this.serializerMap.Length, this.System.WorldUpdateAllocator);
-                var startIndex = new NativeReference<int>(this.System.WorldUpdateAllocator);
+                var keyIndexMap = new NativeHashMap<ulong, int>(this.serializerMap.Length, state.WorldUpdateAllocator);
+                var startIndex = new NativeReference<int>(state.WorldUpdateAllocator);
                 startIndex.Value = UnsafeUtility.SizeOf<Header>();
 
                 var header = new Header
@@ -409,7 +451,7 @@ namespace BovineLabs.Saving
                         .Schedule(dependency);
 
                     handles[index] = newDependency;
-                    serializer.Data.Dispose(newDependency);
+                    UnsafeListDispose.Dispose(serializer.Data, newDependency);
                 }
 
                 dependency = JobHandle.CombineDependencies(handles);
@@ -418,7 +460,7 @@ namespace BovineLabs.Saving
             }
         }
 
-        private NativeArray<byte> Decompress(NativeArray<byte> compressed)
+        private NativeArray<byte> Decompress(ref SystemState state, NativeArray<byte> compressed)
         {
             using (DecompressMarker.Auto())
             {
@@ -426,7 +468,7 @@ namespace BovineLabs.Saving
 
                 if (compressed.Length < headerSize)
                 {
-                    return CollectionHelper.CreateNativeArray<byte>(0, this.System.WorldUpdateAllocator);
+                    return CollectionHelper.CreateNativeArray<byte>(0, state.WorldUpdateAllocator);
                 }
 
                 var header = new Deserializer(compressed, 0).Read<Header>();
@@ -434,20 +476,20 @@ namespace BovineLabs.Saving
 
                 if (!header.IsCompressed)
                 {
-                    var clone = CollectionHelper.CreateNativeArray<byte>(compressed.Length, this.System.WorldUpdateAllocator);
+                    var clone = CollectionHelper.CreateNativeArray<byte>(compressed.Length, state.WorldUpdateAllocator);
                     clone.CopyFrom(compressed); // still need to copy for dispose safety
                     return clone;
                 }
 
                 if (compressed.Length < UnsafeUtility.SizeOf<HeaderCompression>())
                 {
-                    return CollectionHelper.CreateNativeArray<byte>(0, this.System.WorldUpdateAllocator);
+                    return CollectionHelper.CreateNativeArray<byte>(0, state.WorldUpdateAllocator);
                 }
 
                 var deserializer = new Deserializer(compressed, 0);
 
                 var totalSize = 0;
-                var data = new NativeList<DecompressData>(16, this.System.WorldUpdateAllocator);
+                var data = new NativeList<DecompressData>(16, state.WorldUpdateAllocator);
 
                 while (!deserializer.IsAtEnd)
                 {
@@ -465,7 +507,7 @@ namespace BovineLabs.Saving
                     deserializer.Offset(compHeader.CompressedLength);
                 }
 
-                var decompressed = CollectionHelper.CreateNativeArray<byte>(totalSize, this.System.WorldUpdateAllocator);
+                var decompressed = CollectionHelper.CreateNativeArray<byte>(totalSize, state.WorldUpdateAllocator);
 
                 var dependency = new DecompressJob
                     {
@@ -481,18 +523,18 @@ namespace BovineLabs.Saving
             }
         }
 
-        private DeserializeMap Split(NativeArray<byte> decompressed)
+        private DeserializeMap Split(ref SystemState state, NativeArray<byte> decompressed)
         {
-            var deserializer = new Deserializer(decompressed, 0);
+            var deserializer = new Deserializer(decompressed);
 
-            var map = new DeserializeMap(this.System.WorldUpdateAllocator);
+            var map = new DeserializeMap(state.WorldUpdateAllocator);
 
             while (!deserializer.IsAtEnd)
             {
                 var header = deserializer.Peek<HeaderSaver>();
                 var saveDeserializer = new Deserializer(decompressed, deserializer.CurrentIndex);
 
-                this.TryGetSaver(ref saveDeserializer, ref map);
+                this.TryGetSaver(ref state, ref saveDeserializer, ref map);
 
                 // Don't let bad data infinite loop us
                 if (header.LengthInBytes == 0)
@@ -507,14 +549,14 @@ namespace BovineLabs.Saving
             return map;
         }
 
-        private JobHandle Deserialize(DeserializeMap deserializers, JobHandle dependency)
+        private JobHandle Deserialize(ref SystemState state, DeserializeMap deserializers, JobHandle dependency)
         {
             using (DeserializeMarker.Auto())
             {
-                var entityMapper = new EntityMap(this.System.WorldUpdateAllocator);
+                var entityMapper = new EntityMap(state.WorldUpdateAllocator);
 
-                dependency = this.savablePrefabSaver.Deserialize(deserializers.SavablePrefabSaver, entityMapper, dependency);
-                dependency = this.savableSceneSaver.Deserialize(deserializers.SavableSceneSaver, entityMapper, dependency);
+                dependency = this.savablePrefabSaver.Deserialize(ref state, deserializers.SavablePrefabSaver, entityMapper, dependency);
+                dependency = this.savableSceneSaver.Deserialize(ref state, deserializers.SavableSceneSaver, entityMapper, dependency);
 
                 // We allow component stage to run in parallel with the intentional of writing to different components
                 // Every other stage runs sequentially
@@ -524,12 +566,12 @@ namespace BovineLabs.Saving
 
                 foreach (var deserializer in deserializers.Components)
                 {
-                    handles[index++] = this.componentSavers[deserializer.Key].Deserialize(deserializer.Deserializer, entityMapper, dependency);
+                    handles[index++] = this.componentSavers[deserializer.Key].Deserialize(ref state, deserializer.Deserializer, entityMapper, dependency);
                 }
 
                 foreach (var deserializer in deserializers.Buffers)
                 {
-                    handles[index++] = this.bufferSavers[deserializer.Key].Deserialize(deserializer.Deserializer, entityMapper, dependency);
+                    handles[index++] = this.bufferSavers[deserializer.Key].Deserialize(ref state, deserializer.Deserializer, entityMapper, dependency);
                 }
 
                 dependency = JobHandle.CombineDependencies(handles);
@@ -538,7 +580,7 @@ namespace BovineLabs.Saving
             }
         }
 
-        private bool TryGetSaver(ref Deserializer deserializer, ref DeserializeMap map)
+        private bool TryGetSaver(ref SystemState state, ref Deserializer deserializer, ref DeserializeMap map)
         {
             while (true)
             {
@@ -568,33 +610,53 @@ namespace BovineLabs.Saving
                     return true;
                 }
 
-                Debug.LogWarning($"No saver or migration was found or the migration failed for {header.Key}. This data will not be deserialized.");
+                if (!this.TryMigrate(ref state, ref deserializer))
+                {
+                    Debug.LogWarning(
+                        $"No saver or migration was found or the migration failed for {header.Key}. This data will not be deserialized. If intentional ignore.");
+                    return false;
+                }
+
+                // Successfully migrated, deserializer will be updated and point to new data, try find a saver again
+                // It's to migrate multiple times on old data
+            }
+        }
+
+        private bool TryMigrate(ref SystemState state, ref Deserializer deserializer)
+        {
+            var header = deserializer.Peek<HeaderSaver>();
+            if (!this.migrators.TryGetValue(header.Key, out var migrator) || !migrator.Invoke(ref state, ref deserializer))
+            {
                 return false;
             }
+
+            // Debug.Log($"Migrated from {header.Key} to {migrator.To}");
+            return true;
         }
 
         [BurstCompile]
         private struct CompressJob : IJob
         {
-            public NativeList<byte> SaveData;
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeList<byte>* SaveData;
 
             public void Execute()
             {
-                var uncompressedLength = this.SaveData.Length;
+                var uncompressedLength = this.SaveData->Length;
 
                 if (uncompressedLength == 0)
                 {
                     return;
                 }
 
-                var src = this.SaveData.GetUnsafeReadOnlyPtr();
-                var compressedLength = CodecService.Compress(src, this.SaveData.Length, out var dst);
+                var src = this.SaveData->Ptr;
+                var compressedLength = CodecService.Compress(Codec.LZ4, src, this.SaveData->Length, out var dst);
 
-                this.SaveData.Clear();
+                this.SaveData->Clear();
 
                 var header = new HeaderCompression { UncompressedLength = uncompressedLength, CompressedLength = compressedLength };
-                this.SaveData.AddRange(&header, UnsafeUtility.SizeOf<HeaderCompression>());
-                this.SaveData.AddRange(dst, compressedLength);
+                this.SaveData->AddRange(&header, UnsafeUtility.SizeOf<HeaderCompression>());
+                this.SaveData->AddRange(dst, compressedLength);
             }
         }
 
@@ -621,7 +683,7 @@ namespace BovineLabs.Saving
                 var decompressed = (byte*)this.Decompressed.GetUnsafeReadOnlyPtr();
                 var dst = decompressed + data.DecompressedIndex;
 
-                var success = CodecService.Decompress(src, compressionInfo.CompressedLength, dst, compressionInfo.UncompressedLength);
+                var success = CodecService.Decompress(Codec.LZ4, src, compressionInfo.CompressedLength, dst, compressionInfo.UncompressedLength);
 
                 if (!success)
                 {
@@ -637,14 +699,15 @@ namespace BovineLabs.Saving
             public NativeReference<int> StartIndex;
 
             [ReadOnly]
-            public NativeList<byte> SaveData;
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeList<byte>* SaveData;
 
             public ulong Key;
 
             public void Execute()
             {
                 this.KeyIndexMap.Add(this.Key, this.StartIndex.Value);
-                this.StartIndex.Value += this.SaveData.Length;
+                this.StartIndex.Value += this.SaveData->Length;
             }
         }
 
@@ -675,7 +738,8 @@ namespace BovineLabs.Saving
             public NativeList<byte> Output;
 
             [ReadOnly]
-            public NativeList<byte> Input;
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeList<byte>* Input;
 
             [ReadOnly]
             public NativeHashMap<ulong, int> KeyIndexMap;
@@ -685,7 +749,7 @@ namespace BovineLabs.Saving
             public void Execute()
             {
                 var index = this.KeyIndexMap[this.Key];
-                UnsafeUtility.MemCpy((byte*)this.Output.GetUnsafePtr() + index, this.Input.GetUnsafeReadOnlyPtr(), this.Input.Length);
+                UnsafeUtility.MemCpy(this.Output.GetUnsafePtr() + index, this.Input->Ptr, this.Input->Length);
             }
         }
 

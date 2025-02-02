@@ -1,5 +1,5 @@
 ﻿// <copyright file="ComponentSave.cs" company="BovineLabs">
-// Copyright (c) BovineLabs. All rights reserved.
+//     Copyright (c) BovineLabs. All rights reserved.
 // </copyright>
 
 namespace BovineLabs.Saving
@@ -18,20 +18,18 @@ namespace BovineLabs.Saving
 
     public unsafe struct ComponentSave : IDisposable
     {
-        private readonly SystemState* systemState;
         private EntityQuery commandBufferQuery;
 
-        public ComponentSave(SaveBuilder builder, ComponentSaveState state)
+        public ComponentSave(ref SystemState state, SaveBuilder builder, ComponentSaveState saveState)
         {
-            this.systemState = builder.SystemPtr;
-            this.TypeIndex = TypeManager.GetTypeIndexFromStableTypeHash(state.StableTypeHash);
+            this.TypeIndex = TypeManager.GetTypeIndexFromStableTypeHash(saveState.StableTypeHash);
             this.TypeInfo = TypeManager.GetTypeInfo(this.TypeIndex);
 
-            this.Feature = state.Feature;
+            this.Feature = saveState.Feature;
 
             Assert.IsFalse(this.TypeIndex.IsManagedType);
 
-            this.QueryWrite = builder.GetQuery(ComponentType.ReadWrite(this.TypeIndex));
+            this.QueryWrite = builder.GetQuery(ref state, ComponentType.ReadWrite(this.TypeIndex));
 
             this.EntityOffsets = default;
             this.SaveChunks = default;
@@ -41,17 +39,15 @@ namespace BovineLabs.Saving
                 this.commandBufferQuery = new EntityQueryBuilder(Allocator.Temp)
                     .WithAll<EndInitializationEntityCommandBufferSystem.Singleton>()
                     .WithOptions(EntityQueryOptions.IncludeSystems)
-                    .Build(ref builder.System);
+                    .Build(ref state);
             }
             else
             {
                 this.commandBufferQuery = default;
             }
 
-            this.CreateComponentInfo(state);
+            this.CreateComponentInfo(saveState);
         }
-
-        public ref SystemState System => ref *this.systemState;
 
         public SaveFeature Feature { get; }
 
@@ -89,9 +85,9 @@ namespace BovineLabs.Saving
             this.EntityOffsets.Dispose();
         }
 
-        public EntityCommandBuffer CreateCommandBuffer()
+        public EntityCommandBuffer CreateCommandBuffer(ref SystemState state)
         {
-            return this.commandBufferQuery.GetSingleton<EndInitializationEntityCommandBufferSystem.Singleton>().CreateCommandBuffer(this.System.WorldUnmanaged);
+            return this.commandBufferQuery.GetSingleton<EndInitializationEntityCommandBufferSystem.Singleton>().CreateCommandBuffer(state.WorldUnmanaged);
         }
 
         private void CreateComponentInfo(ComponentSaveState state)

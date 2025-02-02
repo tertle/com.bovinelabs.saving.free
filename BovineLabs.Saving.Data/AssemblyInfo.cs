@@ -4,8 +4,8 @@
 
 using System.Runtime.CompilerServices;
 
+[assembly: InternalsVisibleTo("BovineLabs.Saving")]
+[assembly: InternalsVisibleTo("BovineLabs.Saving.Authoring")]
+[assembly: InternalsVisibleTo("BovineLabs.Saving.Debug")]
 [assembly: InternalsVisibleTo("BovineLabs.Saving.Editor")]
 [assembly: InternalsVisibleTo("BovineLabs.Saving.Tests")]
-[assembly: InternalsVisibleTo("BovineLabs.Saving.PerformanceTests")]
-[assembly: InternalsVisibleTo("BovineLabs.Saving.Debug")]
-[assembly: InternalsVisibleTo("BovineLabs.Saving.Authoring")]
