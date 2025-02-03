@@ -1,6 +1,3 @@
-#NOTE
-This repository is not currently maintained however is left here for your reference
-
 # BovineLabs Savanna - DOTS Saving - Free
 The free edition of BovineLabs Savanna Saving for Dots
 
